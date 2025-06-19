@@ -1,0 +1,786 @@
+// This is your Prisma schema file,
+// learn more about it in the docs: https://pris.ly/d/prisma-schema
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+model User {
+  id           String    @id @default(uuid()) @db.Uuid
+  email        String    @unique @db.VarChar(255)
+  passwordHash String    @map("password_hash") @db.VarChar(255)
+  fullName     String    @map("full_name") @db.VarChar(255)
+  role         UserRole  @default(ANALYST)
+  isActive     Boolean   @default(true) @map("is_active")
+  createdAt    DateTime  @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt    DateTime  @default(now()) @updatedAt @map("updated_at") @db.Timestamptz(6)
+  lastLoginAt  DateTime? @map("last_login_at") @db.Timestamptz(6)
+
+  // Relations
+  portfolios Portfolio[]
+  analyses   Analysis[]
+  auditLogs  AuditLog[]
+  apiKeys    ApiKey[]
+
+  @@map("users")
+}
+
+model AuditLog {
+  id        String    @id @default(uuid()) @db.Uuid
+  userId    String?   @map("user_id") @db.Uuid
+  tableName String    @map("table_name") @db.VarChar(100)
+  recordId  String    @map("record_id") @db.Uuid
+  action    AuditAction
+  oldData   Json?     @map("old_data")
+  newData   Json?     @map("new_data")
+  ipAddress String?   @map("ip_address") @db.Inet
+  userAgent String?   @map("user_agent")
+  createdAt DateTime  @default(now()) @map("created_at") @db.Timestamptz(6)
+
+  user User? @relation(fields: [userId], references: [id])
+
+  @@map("audit_logs")
+}
+
+model ApiKey {
+  id          String    @id @default(uuid()) @db.Uuid
+  userId      String    @map("user_id") @db.Uuid
+  keyHash     String    @unique @map("key_hash") @db.VarChar(255)
+  name        String    @db.VarChar(100)
+  permissions Json      @default("[]")
+  lastUsedAt  DateTime? @map("last_used_at") @db.Timestamptz(6)
+  expiresAt   DateTime? @map("expires_at") @db.Timestamptz(6)
+  createdAt   DateTime  @default(now()) @map("created_at") @db.Timestamptz(6)
+  isActive    Boolean   @default(true) @map("is_active")
+
+  user User @relation(fields: [userId], references: [id])
+
+  @@map("api_keys")
+}
+
+model Property {
+  id             String       @id @default(uuid()) @db.Uuid
+  externalId     String?      @map("external_id") @db.VarChar(100)
+  addressLine1   String       @map("address_line1") @db.VarChar(255)
+  addressLine2   String?      @map("address_line2") @db.VarChar(255)
+  city           String       @db.VarChar(100)
+  state          String       @db.Char(2)
+  zipCode        String       @map("zip_code") @db.VarChar(10)
+  latitude       Decimal?     @db.Decimal(10, 8)
+  longitude      Decimal?     @db.Decimal(11, 8)
+  propertyType   PropertyType @map("property_type")
+  bedrooms       Int?
+  bathrooms      Decimal?     @db.Decimal(3, 1)
+  squareFeet     Int?         @map("square_feet")
+  lotSize        Int?         @map("lot_size")
+  yearBuilt      Int?         @map("year_built")
+  listPrice      Decimal?     @map("list_price") @db.Decimal(12, 2)
+  soldPrice      Decimal?     @map("sold_price") @db.Decimal(12, 2)
+  rentEstimate   Decimal?     @map("rent_estimate") @db.Decimal(10, 2)
+  taxAssessedValue Decimal?   @map("tax_assessed_value") @db.Decimal(12, 2)
+  dataSource     String       @map("data_source") @db.VarChar(50)
+  isActive       Boolean      @default(true) @map("is_active")
+  createdAt      DateTime     @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt      DateTime     @default(now()) @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  // Relations
+  history               PropertyHistory[]
+  subjectComparables    Comparable[]      @relation("SubjectProperty")
+  comparableComparables Comparable[]      @relation("ComparableProperty")
+  portfolioProperties   PortfolioProperty[]
+  analyses              Analysis[]
+
+  @@map("properties")
+}
+
+model PropertyHistory {
+  id         String   @id @default(uuid()) @db.Uuid
+  propertyId String   @map("property_id") @db.Uuid
+  fieldName  String   @map("field_name") @db.VarChar(100)
+  oldValue   String?  @map("old_value")
+  newValue   String?  @map("new_value")
+  changedAt  DateTime @default(now()) @map("changed_at") @db.Timestamptz(6)
+  dataSource String?  @map("data_source") @db.VarChar(50)
+
+  property Property @relation(fields: [propertyId], references: [id], onDelete: Cascade)
+
+  @@map("property_history")
+}
+
+model Comparable {
+  id                    String   @id @default(uuid()) @db.Uuid
+  subjectPropertyId     String   @map("subject_property_id") @db.Uuid
+  comparablePropertyId  String   @map("comparable_property_id") @db.Uuid
+  similarityScore       Decimal  @map("similarity_score") @db.Decimal(3, 2)
+  distanceMiles         Decimal? @map("distance_miles") @db.Decimal(5, 2)
+  priceDifference       Decimal? @map("price_difference") @db.Decimal(12, 2)
+  createdAt             DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+
+  subjectProperty    Property @relation("SubjectProperty", fields: [subjectPropertyId], references: [id], onDelete: Cascade)
+  comparableProperty Property @relation("ComparableProperty", fields: [comparablePropertyId], references: [id], onDelete: Cascade)
+
+  @@unique([subjectPropertyId, comparablePropertyId])
+  @@map("comparables")
+}
+
+model MarketMetric {
+  id                    String   @id @default(uuid()) @db.Uuid
+  zipCode               String   @map("zip_code") @db.VarChar(10)
+  metricDate            DateTime @map("metric_date") @db.Date
+  medianSalePrice       Decimal? @map("median_sale_price") @db.Decimal(12, 2)
+  medianRent            Decimal? @map("median_rent") @db.Decimal(10, 2)
+  pricePerSqft          Decimal? @map("price_per_sqft") @db.Decimal(8, 2)
+  salesCount            Int?     @map("sales_count")
+  newListingsCount      Int?     @map("new_listings_count")
+  daysOnMarket          Int?     @map("days_on_market")
+  activeListings        Int?     @map("active_listings")
+  monthsOfSupply        Decimal? @map("months_of_supply") @db.Decimal(4, 2)
+  priceChangeYoy        Decimal? @map("price_change_yoy") @db.Decimal(5, 2)
+  salesVolumeChangeYoy  Decimal? @map("sales_volume_change_yoy") @db.Decimal(5, 2)
+  createdAt             DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+
+  @@unique([zipCode, metricDate])
+  @@map("market_metrics")
+}
+
+model Portfolio {
+  id            String        @id @default(uuid()) @db.Uuid
+  userId        String        @map("user_id") @db.Uuid
+  name          String        @db.VarChar(100)
+  description   String?
+  targetReturn  Decimal?      @map("target_return") @db.Decimal(5, 2)
+  riskTolerance RiskTolerance @map("risk_tolerance") @default(MODERATE)
+  createdAt     DateTime      @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt     DateTime      @default(now()) @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  user       User                @relation(fields: [userId], references: [id])
+  properties PortfolioProperty[]
+
+  @@map("portfolios")
+}
+
+model PortfolioProperty {
+  id                  String   @id @default(uuid()) @db.Uuid
+  portfolioId         String   @map("portfolio_id") @db.Uuid
+  propertyId          String   @map("property_id") @db.Uuid
+  purchaseDate        DateTime @map("purchase_date") @db.Date
+  purchasePrice       Decimal  @map("purchase_price") @db.Decimal(12, 2)
+  downPayment         Decimal? @map("down_payment") @db.Decimal(12, 2)
+  loanAmount          Decimal? @map("loan_amount") @db.Decimal(12, 2)
+  interestRate        Decimal? @map("interest_rate") @db.Decimal(5, 3)
+  currentValue        Decimal? @map("current_value") @db.Decimal(12, 2)
+  monthlyRent         Decimal? @map("monthly_rent") @db.Decimal(10, 2)
+  occupancyStatus     String?  @map("occupancy_status") @db.VarChar(20)
+  totalReturn         Decimal? @map("total_return") @db.Decimal(12, 2)
+  annualizedReturn    Decimal? @map("annualized_return") @db.Decimal(5, 2)
+  cashOnCashReturn    Decimal? @map("cash_on_cash_return") @db.Decimal(5, 2)
+  createdAt           DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt           DateTime @default(now()) @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  portfolio Portfolio @relation(fields: [portfolioId], references: [id], onDelete: Cascade)
+  property  Property  @relation(fields: [propertyId], references: [id])
+
+  @@unique([portfolioId, propertyId])
+  @@map("portfolio_properties")
+}
+
+model Analysis {
+  id                  String       @id @default(uuid()) @db.Uuid
+  propertyId          String       @map("property_id") @db.Uuid
+  userId              String       @map("user_id") @db.Uuid
+  analysisType        AnalysisType @map("analysis_type")
+  purchasePrice       Decimal?     @map("purchase_price") @db.Decimal(12, 2)
+  downPaymentPercent  Decimal?     @map("down_payment_percent") @db.Decimal(5, 2)
+  interestRate        Decimal?     @map("interest_rate") @db.Decimal(5, 3)
+  loanTermYears       Int?         @map("loan_term_years")
+  rentGrowthRate      Decimal?     @map("rent_growth_rate") @db.Decimal(5, 2)
+  expenseGrowthRate   Decimal?     @map("expense_growth_rate") @db.Decimal(5, 2)
+  vacancyRate         Decimal?     @map("vacancy_rate") @db.Decimal(5, 2)
+  managementFeeRate   Decimal?     @map("management_fee_rate") @db.Decimal(5, 2)
+  monthlyCashFlow     Decimal?     @map("monthly_cash_flow") @db.Decimal(10, 2)
+  capRate             Decimal?     @map("cap_rate") @db.Decimal(5, 2)
+  cashOnCashReturn    Decimal?     @map("cash_on_cash_return") @db.Decimal(5, 2)
+  irr                 Decimal?     @db.Decimal(5, 2)
+  breakEvenYear       Int?         @map("break_even_year")
+  detailedResults     Json?        @map("detailed_results")
+  createdAt           DateTime     @default(now()) @map("created_at") @db.Timestamptz(6)
+
+  property Property @relation(fields: [propertyId], references: [id])
+  user     User     @relation(fields: [userId], references: [id])
+
+  @@map("analyses")
+}
+
+// NYC Open Data Models
+model NYCPropertySale {
+  id                String    @id @default(uuid()) @db.Uuid
+  borough           Int
+  neighborhood      String?   @db.VarChar(255)
+  buildingClassName String?   @map("building_class_name") @db.VarChar(255)
+  taxClassAtSale    String?   @map("tax_class_at_sale") @db.VarChar(10)
+  block             Int
+  lot               Int
+  easement          String?   @db.VarChar(10)
+  buildingClassAtSale String? @map("building_class_at_sale") @db.VarChar(10)
+  address           String?   @db.VarChar(255)
+  apartmentNumber   String?   @map("apartment_number") @db.VarChar(50)
+  zipCode           String?   @map("zip_code") @db.VarChar(10)
+  residentialUnits  Int?      @map("residential_units")
+  commercialUnits   Int?      @map("commercial_units")
+  totalUnits        Int?      @map("total_units")
+  landSquareFeet    Int?      @map("land_square_feet")
+  grossSquareFeet   Int?      @map("gross_square_feet")
+  yearBuilt         Int?      @map("year_built")
+  taxClassAtTime    String?   @map("tax_class_at_time") @db.VarChar(10)
+  buildingClassAtTime String? @map("building_class_at_time") @db.VarChar(10)
+  salePrice         Decimal?  @map("sale_price") @db.Decimal(12, 2)
+  saleDate          DateTime? @map("sale_date") @db.Date
+  dataSourceId      String?   @map("data_source_id") @db.VarChar(50)
+  createdAt         DateTime  @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt         DateTime  @updatedAt @map("updated_at") @db.Timestamptz(6)
+  
+  @@unique([borough, block, lot, saleDate])
+  @@index([zipCode])
+  @@index([saleDate])
+  @@index([borough, block, lot])
+  @@map("nyc_property_sales")
+}
+
+model NYCPropertyValuation {
+  id                    String    @id @default(uuid()) @db.Uuid
+  borough               String?   @db.VarChar(50)
+  block                 Int
+  lot                   Int
+  ownerName             String?   @map("owner_name") @db.VarChar(255)
+  propertyAddress       String?   @map("property_address") @db.VarChar(255)
+  taxClass              String?   @map("tax_class") @db.VarChar(10)
+  taxRate               Decimal?  @map("tax_rate") @db.Decimal(5, 4)
+  assessedValue         Decimal?  @map("assessed_value") @db.Decimal(12, 2)
+  marketValue           Decimal?  @map("market_value") @db.Decimal(12, 2)
+  taxableValue          Decimal?  @map("taxable_value") @db.Decimal(12, 2)
+  exemptionValue        Decimal?  @map("exemption_value") @db.Decimal(12, 2)
+  annualPropertyTax     Decimal?  @map("annual_property_tax") @db.Decimal(10, 2)
+  dataYear              Int       @map("data_year")
+  dataSourceId          String?   @map("data_source_id") @db.VarChar(50)
+  createdAt             DateTime  @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt             DateTime  @updatedAt @map("updated_at") @db.Timestamptz(6)
+  
+  @@unique([borough, block, lot, dataYear])
+  @@index([borough, block, lot])
+  @@map("nyc_property_valuations")
+}
+
+model NYCHousingViolation {
+  id                String    @id @default(uuid()) @db.Uuid
+  violationId       String    @unique @map("violation_id") @db.VarChar(50)
+  buildingId        String?   @map("building_id") @db.VarChar(50)
+  registrationId    String?   @map("registration_id") @db.VarChar(50)
+  borough           String?   @db.VarChar(50)
+  houseNumber       String?   @map("house_number") @db.VarChar(50)
+  streetName        String?   @map("street_name") @db.VarChar(255)
+  postcode          String?   @db.VarChar(10)
+  apartment         String?   @db.VarChar(50)
+  story             String?   @db.VarChar(50)
+  block             Int?
+  lot               Int?
+  class             String?   @db.VarChar(10)
+  inspectionDate    DateTime? @map("inspection_date") @db.Date
+  approvedDate      DateTime? @map("approved_date") @db.Date
+  originalCertifyByDate DateTime? @map("original_certify_by_date") @db.Date
+  originalCorrectByDate DateTime? @map("original_correct_by_date") @db.Date
+  newCertifyByDate  DateTime? @map("new_certify_by_date") @db.Date
+  newCorrectByDate  DateTime? @map("new_correct_by_date") @db.Date
+  certifiedDate     DateTime? @map("certified_date") @db.Date
+  orderNumber       String?   @map("order_number") @db.VarChar(50)
+  novDescription    String?   @map("nov_description") @db.Text
+  novIssuedDate     DateTime? @map("nov_issued_date") @db.Date
+  currentStatus     String?   @map("current_status") @db.VarChar(50)
+  dataSourceId      String?   @map("data_source_id") @db.VarChar(50)
+  createdAt         DateTime  @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt         DateTime  @updatedAt @map("updated_at") @db.Timestamptz(6)
+  
+  @@index([borough, block, lot])
+  @@index([inspectionDate])
+  @@index([currentStatus])
+  @@map("nyc_housing_violations")
+}
+
+model NYCDOBPermit {
+  id                String    @id @default(uuid()) @db.Uuid
+  jobFilingNumber   String    @map("job_filing_number") @db.VarChar(50)
+  filingReason      String?   @map("filing_reason") @db.VarChar(100)
+  borough           String?   @db.VarChar(50)
+  block             String?   @db.VarChar(50)
+  lot               String?   @db.VarChar(50)
+  houseNumber       String?   @map("house_number") @db.VarChar(50)
+  streetName        String?   @map("street_name") @db.VarChar(255)
+  bin               String?   @db.VarChar(50)
+  workOnFloor       String?   @map("work_on_floor") @db.VarChar(100)
+  workType          String?   @map("work_type") @db.VarChar(100)
+  workPermit        String    @unique @map("work_permit") @db.VarChar(100)
+  approvedDate      DateTime? @map("approved_date") @db.Date
+  issuedDate        DateTime? @map("issued_date") @db.Date
+  estimatedJobCosts Decimal?  @map("estimated_job_costs") @db.Decimal(12, 2)
+  jobDescription    String?   @map("job_description") @db.Text
+  dataSourceId      String?   @map("data_source_id") @db.VarChar(50)
+  createdAt         DateTime  @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt         DateTime  @updatedAt @map("updated_at") @db.Timestamptz(6)
+  
+  @@unique([jobFilingNumber, workPermit])
+  @@index([borough, block, lot])
+  @@index([approvedDate])
+  @@index([issuedDate])
+  @@map("nyc_dob_permits")
+}
+
+model NYCDOBViolation {
+  id                  String    @id @default(uuid()) @db.Uuid
+  isnDobBisViol       String?   @map("isn_dob_bis_viol") @db.VarChar(50)
+  borough             String?   @map("boro") @db.VarChar(10)
+  block               String?   @db.VarChar(50)
+  lot                 String?   @db.VarChar(50)
+  issueDate           String?   @map("issue_date") @db.VarChar(20) // Format: YYYYMMDD
+  violationTypeCode   String?   @map("violation_type_code") @db.VarChar(10)
+  violationNumber     String    @unique @map("violation_number") @db.VarChar(100)
+  houseNumber         String?   @map("house_number") @db.VarChar(50)
+  street              String?   @db.VarChar(255)
+  dispositionComments String?   @map("disposition_comments") @db.Text
+  deviceNumber        String?   @map("device_number") @db.VarChar(50)
+  description         String?   @db.Text
+  number              String?   @db.VarChar(100)
+  violationCategory   String?   @map("violation_category") @db.VarChar(100)
+  violationType       String?   @map("violation_type") @db.VarChar(255)
+  dataSourceId        String?   @map("data_source_id") @db.VarChar(50)
+  createdAt           DateTime  @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt           DateTime  @updatedAt @map("updated_at") @db.Timestamptz(6)
+  
+  @@index([borough, block, lot])
+  @@index([issueDate])
+  @@index([violationTypeCode])
+  @@map("nyc_dob_violations")
+}
+
+// Additional NYC Datasets
+model NYCPropertyValuation2024 {
+  id                String    @id @default(uuid()) @db.Uuid
+  jobFilingNumber   String?   @map("job_filing_number") @db.VarChar(50)
+  filingReason      String?   @map("filing_reason") @db.VarChar(100)
+  houseNumber       String?   @map("house_no") @db.VarChar(50)
+  streetName        String?   @map("street_name") @db.VarChar(255)
+  borough           String?   @db.VarChar(50)
+  lot               String?   @db.VarChar(50)
+  bin               String?   @db.VarChar(50)
+  block             String?   @db.VarChar(50)
+  communityBoard    String?   @map("c_b_no") @db.VarChar(10)
+  workOnFloor       String?   @map("work_on_floor") @db.VarChar(100)
+  workType          String?   @map("work_type") @db.VarChar(100)
+  permitteeType     String?   @map("permittee_s_license_type") @db.VarChar(10)
+  applicantLicense  String?   @map("applicant_license") @db.VarChar(50)
+  applicantFirstName String?  @map("applicant_first_name") @db.VarChar(100)
+  applicantLastName String?   @map("applicant_last_name") @db.VarChar(100)
+  applicantBusinessName String? @map("applicant_business_name") @db.VarChar(255)
+  applicantBusinessAddress String? @map("applicant_business_address") @db.VarChar(255)
+  workPermit        String?   @map("work_permit") @db.VarChar(100)
+  jobDescription    String?   @map("job_description") @db.Text
+  estimatedJobCosts Decimal?  @map("estimated_job_costs") @db.Decimal(12, 2)
+  ownerBusinessName String?   @map("owner_business_name") @db.VarChar(255)
+  ownerName         String?   @map("owner_name") @db.VarChar(255)
+  dataSourceId      String?   @map("data_source_id") @db.VarChar(50)
+  createdAt         DateTime  @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt         DateTime  @updatedAt @map("updated_at") @db.Timestamptz(6)
+  
+  @@unique([jobFilingNumber])
+  @@index([borough, block, lot])
+  @@map("nyc_property_valuation_2024")
+}
+
+model NYCPropertyValuation2023 {
+  id                String    @id @default(uuid()) @db.Uuid
+  courtIndexNumber  String?   @map("court_index_number") @db.VarChar(50)
+  docketNumber      String?   @map("docket_number") @db.VarChar(50)
+  evictionAddress   String?   @map("eviction_address") @db.VarChar(255)
+  evictionAptNum    String?   @map("eviction_apt_num") @db.VarChar(50)
+  executedDate      DateTime? @map("executed_date") @db.Date
+  marshalFirstName  String?   @map("marshal_first_name") @db.VarChar(100)
+  marshalLastName   String?   @map("marshal_last_name") @db.VarChar(100)
+  residentialCommercial String? @map("residential_commercial_ind") @db.VarChar(20)
+  borough           String?   @db.VarChar(50)
+  evictionZip       String?   @map("eviction_zip") @db.VarChar(10)
+  ejectment         String?   @db.VarChar(50)
+  evictionPossession String?  @map("eviction_possession") @db.VarChar(50)
+  latitude          Decimal?  @db.Decimal(10, 8)
+  longitude         Decimal?  @db.Decimal(11, 8)
+  communityBoard    String?   @map("community_board") @db.VarChar(10)
+  councilDistrict   String?   @map("council_district") @db.VarChar(10)
+  censusTract       String?   @map("census_tract") @db.VarChar(20)
+  bin               String?   @db.VarChar(50)
+  bbl               String?   @db.VarChar(50)
+  nta               String?   @db.VarChar(100)
+  dataSourceId      String?   @map("data_source_id") @db.VarChar(50)
+  createdAt         DateTime  @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt         DateTime  @updatedAt @map("updated_at") @db.Timestamptz(6)
+  
+  @@unique([courtIndexNumber])
+  @@index([borough])
+  @@index([executedDate])
+  @@map("nyc_property_valuation_2023")
+}
+
+model NYCComplaintData {
+  id                String    @id @default(uuid()) @db.Uuid
+  complaintNumber   String    @unique @map("cmplnt_num") @db.VarChar(50)
+  complaintFromDate DateTime? @map("cmplnt_fr_dt") @db.Date
+  complaintFromTime String?   @map("cmplnt_fr_tm") @db.VarChar(10)
+  complaintToDate   DateTime? @map("cmplnt_to_dt") @db.Date
+  complaintToTime   String?   @map("cmplnt_to_tm") @db.VarChar(10)
+  precinctCode      String?   @map("addr_pct_cd") @db.VarChar(10)
+  reportDate        DateTime? @map("rpt_dt") @db.Date
+  keyCode           String?   @map("ky_cd") @db.VarChar(10)
+  offenseDescription String?  @map("ofns_desc") @db.VarChar(255)
+  pdCode            String?   @map("pd_cd") @db.VarChar(10)
+  pdDescription     String?   @map("pd_desc") @db.VarChar(255)
+  crimeAttemptedCompleted String? @map("crm_atpt_cptd_cd") @db.VarChar(20)
+  lawCategoryCode   String?   @map("law_cat_cd") @db.VarChar(20)
+  boroughName       String?   @map("boro_nm") @db.VarChar(50)
+  locationDescription String? @map("loc_of_occur_desc") @db.VarChar(100)
+  premiseType       String?   @map("prem_typ_desc") @db.VarChar(100)
+  jurisdiction      String?   @map("juris_desc") @db.VarChar(100)
+  xCoord            String?   @map("x_coord_cd") @db.VarChar(20)
+  yCoord            String?   @map("y_coord_cd") @db.VarChar(20)
+  latitude          Decimal?  @db.Decimal(10, 8)
+  longitude         Decimal?  @db.Decimal(11, 8)
+  patrolBorough     String?   @map("patrol_boro") @db.VarChar(100)
+  victimAgeGroup    String?   @map("vic_age_group") @db.VarChar(20)
+  victimRace        String?   @map("vic_race") @db.VarChar(50)
+  victimSex         String?   @map("vic_sex") @db.VarChar(10)
+  dataSourceId      String?   @map("data_source_id") @db.VarChar(50)
+  createdAt         DateTime  @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt         DateTime  @updatedAt @map("updated_at") @db.Timestamptz(6)
+  
+  @@index([boroughName])
+  @@index([complaintFromDate])
+  @@index([offenseDescription])
+  @@map("nyc_complaint_data")
+}
+
+model NYCTaxDebtData {
+  id                String    @id @default(uuid()) @db.Uuid
+  month             DateTime? @db.Date
+  cycle             String?   @db.VarChar(50)
+  borough           String?   @db.VarChar(10)
+  block             String?   @db.VarChar(50)
+  lot               String?   @db.VarChar(50)
+  taxClassCode      String?   @map("tax_class_code") @db.VarChar(10)
+  buildingClass     String?   @map("building_class") @db.VarChar(10)
+  communityBoard    String?   @map("community_board") @db.VarChar(10)
+  councilDistrict   String?   @map("council_district") @db.VarChar(10)
+  houseNumber       String?   @map("house_number") @db.VarChar(50)
+  streetName        String?   @map("street_name") @db.VarChar(255)
+  zipCode           String?   @map("zip_code") @db.VarChar(10)
+  waterDebtOnly     String?   @map("water_debt_only") @db.VarChar(10)
+  dataSourceId      String?   @map("data_source_id") @db.VarChar(50)
+  createdAt         DateTime  @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt         DateTime  @updatedAt @map("updated_at") @db.Timestamptz(6)
+  
+  @@unique([borough, block, lot, month])
+  @@index([borough, block, lot])
+  @@index([month])
+  @@map("nyc_tax_debt_data")
+}
+
+model NYCEventPermit {
+  id                String    @id @default(uuid()) @db.Uuid
+  eventId           String    @unique @map("eventid") @db.VarChar(50)
+  eventType         String?   @map("eventtype") @db.VarChar(100)
+  startDateTime     DateTime? @map("startdatetime") @db.Timestamptz(6)
+  endDateTime       DateTime? @map("enddatetime") @db.Timestamptz(6)
+  enteredOn         DateTime? @map("enteredon") @db.Timestamptz(6)
+  eventAgency       String?   @map("eventagency") @db.VarChar(255)
+  parkingHeld       String?   @map("parkingheld") @db.Text
+  borough           String?   @db.VarChar(50)
+  communityBoard    String?   @map("communityboard_s") @db.VarChar(10)
+  policePrecinct    String?   @map("policeprecinct_s") @db.VarChar(10)
+  category          String?   @db.VarChar(100)
+  subcategoryName   String?   @map("subcategoryname") @db.VarChar(100)
+  country           String?   @db.VarChar(100)
+  zipCodes          String?   @map("zipcode_s") @db.VarChar(100)
+  dataSourceId      String?   @map("data_source_id") @db.VarChar(50)
+  createdAt         DateTime  @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt         DateTime  @updatedAt @map("updated_at") @db.Timestamptz(6)
+  
+  @@index([borough])
+  @@index([startDateTime])
+  @@index([eventType])
+  @@map("nyc_event_permits")
+}
+
+model NYCBuildJobFiling {
+  id                String    @id @default(uuid()) @db.Uuid
+  jobFilingNumber   String    @unique @map("job_filing_number") @db.VarChar(50)
+  filingStatus      String?   @map("filing_status") @db.VarChar(50)
+  houseNumber       String?   @map("house_no") @db.VarChar(50)
+  streetName        String?   @map("street_name") @db.VarChar(255)
+  borough           String?   @db.VarChar(50)
+  block             String?   @db.VarChar(50)
+  lot               String?   @db.VarChar(50)
+  bin               String?   @db.VarChar(50)
+  communityBoard    String?   @map("commmunity_board") @db.VarChar(10)
+  workOnFloor       String?   @map("work_on_floor") @db.VarChar(100)
+  applicantTitle    String?   @map("applicant_professional_title") @db.VarChar(10)
+  applicantLicense  String?   @map("applicant_license") @db.VarChar(50)
+  applicantFirstName String?  @map("applicant_first_name") @db.VarChar(100)
+  applicantLastName String?   @map("applicant_last_name") @db.VarChar(100)
+  ownerBusinessName String?   @map("owner_s_business_name") @db.VarChar(255)
+  ownerStreetName   String?   @map("owner_s_street_name") @db.VarChar(255)
+  city              String?   @db.VarChar(100)
+  state             String?   @db.VarChar(10)
+  zip               String?   @db.VarChar(10)
+  initialCost       Decimal?  @map("initial_cost") @db.Decimal(12, 2)
+  totalFloorArea    Decimal?  @map("total_construction_floor_area") @db.Decimal(10, 2)
+  buildingType      String?   @map("building_type") @db.VarChar(100)
+  existingDwellingUnits Int?  @map("existing_dwelling_units")
+  proposedDwellingUnits Int?  @map("proposed_dwelling_units")
+  currentStatusDate DateTime? @map("current_status_date") @db.Timestamptz(6)
+  jobType           String?   @map("job_type") @db.VarChar(100)
+  dataSourceId      String?   @map("data_source_id") @db.VarChar(50)
+  createdAt         DateTime  @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt         DateTime  @updatedAt @map("updated_at") @db.Timestamptz(6)
+  
+  @@index([borough, block, lot])
+  @@index([currentStatusDate])
+  @@index([filingStatus])
+  @@map("nyc_build_job_filings")
+}
+
+model NYCBusinessLicense {
+  id                String    @id @default(uuid()) @db.Uuid
+  licenseNumber     String    @unique @map("license_nbr") @db.VarChar(50)
+  businessName      String?   @map("business_name") @db.VarChar(255)
+  businessUniqueId  String?   @map("business_unique_id") @db.VarChar(50)
+  businessCategory  String?   @map("business_category") @db.VarChar(100)
+  licenseType       String?   @map("license_type") @db.VarChar(50)
+  licenseStatus     String?   @map("license_status") @db.VarChar(50)
+  licenseCreationDate DateTime? @map("license_creation_date") @db.Date
+  licenseExpirationDate DateTime? @map("lic_expir_dd") @db.Date
+  addressCity       String?   @map("address_city") @db.VarChar(100)
+  addressState      String?   @map("address_state") @db.VarChar(10)
+  addressZip        String?   @map("address_zip") @db.VarChar(10)
+  dataSourceId      String?   @map("data_source_id") @db.VarChar(50)
+  createdAt         DateTime  @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt         DateTime  @updatedAt @map("updated_at") @db.Timestamptz(6)
+  
+  @@index([businessCategory])
+  @@index([licenseStatus])
+  @@index([addressCity])
+  @@map("nyc_business_licenses")
+}
+
+model NYCRestaurantInspection {
+  id                String    @id @default(uuid()) @db.Uuid
+  camis             String    @map("camis") @db.VarChar(50)
+  dba               String?   @db.VarChar(255)
+  borough           String?   @map("boro") @db.VarChar(50)
+  building          String?   @db.VarChar(50)
+  street            String?   @db.VarChar(255)
+  zipcode           String?   @db.VarChar(10)
+  phone             String?   @db.VarChar(20)
+  inspectionDate    DateTime? @map("inspection_date") @db.Date
+  criticalFlag      String?   @map("critical_flag") @db.VarChar(50)
+  recordDate        DateTime? @map("record_date") @db.Timestamptz(6)
+  latitude          Decimal?  @db.Decimal(10, 8)
+  longitude         Decimal?  @db.Decimal(11, 8)
+  communityBoard    String?   @map("community_board") @db.VarChar(10)
+  councilDistrict   String?   @map("council_district") @db.VarChar(10)
+  censusTract       String?   @map("census_tract") @db.VarChar(20)
+  bin               String?   @db.VarChar(50)
+  bbl               String?   @db.VarChar(50)
+  nta               String?   @db.VarChar(100)
+  dataSourceId      String?   @map("data_source_id") @db.VarChar(50)
+  createdAt         DateTime  @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt         DateTime  @updatedAt @map("updated_at") @db.Timestamptz(6)
+  
+  @@unique([camis, inspectionDate])
+  @@index([borough])
+  @@index([camis])
+  @@map("nyc_restaurant_inspections")
+}
+
+model NYCDataSyncLog {
+  id              String   @id @default(uuid()) @db.Uuid
+  datasetId       String   @map("dataset_id") @db.VarChar(50)
+  datasetName     String   @map("dataset_name") @db.VarChar(255)
+  syncType        String   @map("sync_type") @db.VarChar(50) // 'full' or 'incremental'
+  recordsProcessed Int     @map("records_processed")
+  recordsAdded    Int      @map("records_added")
+  recordsUpdated  Int      @map("records_updated")
+  recordsFailed   Int      @map("records_failed")
+  startTime       DateTime @map("start_time") @db.Timestamptz(6)
+  endTime         DateTime @map("end_time") @db.Timestamptz(6)
+  status          String   @db.VarChar(50) // 'success', 'partial', 'failed'
+  errorMessage    String?  @map("error_message") @db.Text
+  lastRecordDate  DateTime? @map("last_record_date") @db.Timestamptz(6)
+  createdAt       DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+  
+  @@index([datasetId, startTime])
+  @@map("nyc_data_sync_logs")
+}
+
+// Census Bureau Data Models
+model CensusZipCodeData {
+  id                      String   @id @default(uuid()) @db.Uuid
+  zipCode                 String   @map("zip_code") @db.VarChar(10)
+  state                   String   @db.VarChar(2)
+  year                    Int
+  
+  // Population
+  totalPopulation         Int?     @map("total_population")          // B01003_001E
+  
+  // Income
+  medianHouseholdIncome   Int?     @map("median_household_income")   // B19013_001E
+  medianFamilyIncome      Int?     @map("median_family_income")      // B19113_001E
+  
+  // Employment
+  employedCivilian        Int?     @map("employed_civilian")         // B23025_002E
+  unemployed              Int?     @map("unemployed")                // B23025_005E
+  
+  // Housing Tenure
+  ownerOccupiedHousing    Int?     @map("owner_occupied_housing")    // B25003_002E
+  renterOccupiedHousing   Int?     @map("renter_occupied_housing")   // B25003_003E
+  
+  // Housing Units by Structure
+  housingUnitsTotal       Int?     @map("housing_units_total")       // B25024_001E
+  singleDetached          Int?     @map("single_detached")           // B25024_002E
+  singleAttached          Int?     @map("single_attached")           // B25024_003E
+  units2                  Int?     @map("units_2")                   // B25024_004E
+  units3to4               Int?     @map("units_3_to_4")              // B25024_005E
+  units5to9               Int?     @map("units_5_to_9")              // B25024_006E
+  units10to19             Int?     @map("units_10_to_19")            // B25024_007E
+  units20to49             Int?     @map("units_20_to_49")            // B25024_008E
+  units50plus             Int?     @map("units_50_plus")             // B25024_009E
+  mobileHome              Int?     @map("mobile_home")               // B25024_010E
+  
+  // Income Distribution
+  incomeLess10k           Int?     @map("income_less_10k")           // B19001_002E
+  income10kTo14k          Int?     @map("income_10k_to_14k")         // B19001_003E
+  income15kTo19k          Int?     @map("income_15k_to_19k")         // B19001_004E
+  income20kTo24k          Int?     @map("income_20k_to_24k")         // B19001_005E
+  income25kTo29k          Int?     @map("income_25k_to_29k")         // B19001_006E
+  income30kTo34k          Int?     @map("income_30k_to_34k")         // B19001_007E
+  income35kTo39k          Int?     @map("income_35k_to_39k")         // B19001_008E
+  income40kTo44k          Int?     @map("income_40k_to_44k")         // B19001_009E
+  income45kTo49k          Int?     @map("income_45k_to_49k")         // B19001_010E
+  income50kTo59k          Int?     @map("income_50k_to_59k")         // B19001_011E
+  income60kTo74k          Int?     @map("income_60k_to_74k")         // B19001_012E
+  income75kTo99k          Int?     @map("income_75k_to_99k")         // B19001_013E
+  income100kTo124k        Int?     @map("income_100k_to_124k")       // B19001_014E
+  income125kTo149k        Int?     @map("income_125k_to_149k")       // B19001_015E
+  income150kTo199k        Int?     @map("income_150k_to_199k")       // B19001_016E
+  income200kPlus          Int?     @map("income_200k_plus")          // B19001_017E
+  
+  // Demographics by Age and Sex
+  totalPopulationBySex    Int?     @map("total_population_by_sex")   // B01001_001E
+  maleUnder5              Int?     @map("male_under_5")              // B01001_003E
+  femaleUnder5            Int?     @map("female_under_5")            // B01001_027E
+  male5to9                Int?     @map("male_5_to_9")               // B01001_004E
+  female5to9              Int?     @map("female_5_to_9")             // B01001_028E
+  male10to14              Int?     @map("male_10_to_14")             // B01001_005E
+  female10to14            Int?     @map("female_10_to_14")           // B01001_029E
+  male15to17              Int?     @map("male_15_to_17")             // B01001_006E
+  female15to17            Int?     @map("female_15_to_17")           // B01001_030E
+  male18to19              Int?     @map("male_18_to_19")             // B01001_007E
+  female18to19            Int?     @map("female_18_to_19")           // B01001_031E
+  male20                  Int?     @map("male_20")                   // B01001_008E
+  female20                Int?     @map("female_20")                 // B01001_032E
+  male21                  Int?     @map("male_21")                   // B01001_009E
+  female21                Int?     @map("female_21")                 // B01001_033E
+  male22to24              Int?     @map("male_22_to_24")             // B01001_010E
+  female22to24            Int?     @map("female_22_to_24")           // B01001_034E
+  male25to29              Int?     @map("male_25_to_29")             // B01001_011E
+  female25to29            Int?     @map("female_25_to_29")           // B01001_035E
+  male30to34              Int?     @map("male_30_to_34")             // B01001_012E
+  female30to34            Int?     @map("female_30_to_34")           // B01001_036E
+  male35to39              Int?     @map("male_35_to_39")             // B01001_013E
+  female35to39            Int?     @map("female_35_to_39")           // B01001_037E
+  male60to61              Int?     @map("male_60_to_61")             // B01001_017E
+  female60to61            Int?     @map("female_60_to_61")           // B01001_041E
+  male65to66              Int?     @map("male_65_to_66")             // B01001_020E
+  female65to66            Int?     @map("female_65_to_66")           // B01001_044E
+  
+  dataSourceId            String?  @map("data_source_id") @db.VarChar(50)
+  createdAt               DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt               DateTime @updatedAt @map("updated_at") @db.Timestamptz(6)
+  
+  @@unique([zipCode, state, year])
+  @@index([zipCode])
+  @@index([state])
+  @@index([year])
+  @@map("census_zip_code_data")
+}
+
+model CensusDataSyncLog {
+  id              String   @id @default(uuid()) @db.Uuid
+  datasetType     String   @map("dataset_type") @db.VarChar(50) // 'zip_code_data'
+  year            Int
+  geography       String   @db.VarChar(50) // 'state', 'zip_code', etc.
+  recordsProcessed Int     @map("records_processed")
+  recordsAdded    Int      @map("records_added")
+  recordsUpdated  Int      @map("records_updated")
+  recordsFailed   Int      @map("records_failed")
+  startTime       DateTime @map("start_time") @db.Timestamptz(6)
+  endTime         DateTime @map("end_time") @db.Timestamptz(6)
+  status          String   @db.VarChar(50) // 'success', 'partial', 'failed'
+  errorMessage    String?  @map("error_message") @db.Text
+  createdAt       DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+  
+  @@index([datasetType, year])
+  @@map("census_data_sync_logs")
+}
+
+// Enums
+enum UserRole {
+  ADMIN    @map("admin")
+  ANALYST  @map("analyst")
+  VIEWER   @map("viewer")
+
+  @@map("user_role")
+}
+
+enum AuditAction {
+  INSERT
+  UPDATE
+  DELETE
+
+  @@map("audit_action")
+}
+
+enum PropertyType {
+  SINGLE_FAMILY @map("single_family")
+  CONDO         @map("condo")
+  TOWNHOUSE     @map("townhouse")
+  MULTI_FAMILY  @map("multi_family")
+  LAND          @map("land")
+  COMMERCIAL    @map("commercial")
+
+  @@map("property_type")
+}
+
+enum RiskTolerance {
+  CONSERVATIVE @map("conservative")
+  MODERATE     @map("moderate")
+  AGGRESSIVE   @map("aggressive")
+
+  @@map("risk_tolerance")
+}
+
+enum AnalysisType {
+  INVESTMENT @map("investment")
+  MARKET     @map("market")
+  COMPARABLE @map("comparable")
+
+  @@map("analysis_type")
+}

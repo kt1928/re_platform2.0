@@ -1,0 +1,40 @@
+# Dependencies
+node_modules/
+/.pnp
+.pnp.js
+
+# Production builds
+/.next/
+/out/
+/build
+
+# Environment variables
+.env.local
+.env.development.local
+.env.test.local
+.env.production.local
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+*.log
+
+# Database
+*.db
+*.sqlite
+
+# Testing
+coverage/
+.nyc_output
+
+# Misc
+*.tgz
+*.tar.gz
+
+# Prisma
+prisma/migrations/migration_lock.toml
