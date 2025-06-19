@@ -202,16 +202,17 @@ export class NYCOpenDataClient {
       let batch: any[] = [];
       let attempt = 0;
       let success = false;
+      
+      // Define batch parameters outside the retry loop so it's accessible later
+      const batchParams = {
+        ...sortParams,
+        $limit: Math.min(limit, maxRecords ? maxRecords - totalProcessed : limit),
+        $offset: offset
+      };
 
       // Retry logic for robust fetching
       while (attempt < retryAttempts && !success) {
         try {
-          const batchParams = {
-            ...sortParams,
-            $limit: Math.min(limit, maxRecords ? maxRecords - totalProcessed : limit),
-            $offset: offset
-          };
-
           console.log(`Fetching batch: offset=${offset.toLocaleString()}, limit=${batchParams.$limit.toLocaleString()}`);
           batch = await this.fetchDataset(dataset, batchParams);
           success = true;
