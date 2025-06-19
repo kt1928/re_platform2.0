@@ -291,6 +291,52 @@ export class NYCDataIngestionService {
     return isNaN(parsed) ? null : parsed;
   }
 
+  // Helper method to get a meaningful identifier for a record for logging
+  private getRecordIdentifier(record: any, dataset: NYCDataset): string {
+    if (dataset.primaryKey && dataset.primaryKey.length > 0) {
+      const ids = dataset.primaryKey.map(key => record[key]).filter(Boolean);
+      if (ids.length > 0) {
+        return `(${ids.join(', ')})`;
+      }
+    }
+    
+    // Fallback identifiers for different datasets
+    if (record.camis) return `CAMIS: ${record.camis}`;
+    if (record.job_filing_number) return `Job: ${record.job_filing_number}`;
+    if (record.violation_number) return `Violation: ${record.violation_number}`;
+    if (record.cmplnt_num) return `Complaint: ${record.cmplnt_num}`;
+    if (record.license_nbr) return `License: ${record.license_nbr}`;
+    if (record.eventid) return `Event: ${record.eventid}`;
+    
+    return '(unknown ID)';
+  }
+
+  // Helper method to sanitize record data for safe logging (remove sensitive/large fields)
+  private sanitizeRecordForLogging(record: any): any {
+    const sanitized = { ...record };
+    
+    // Remove potentially large or sensitive fields
+    const fieldsToRemove = ['job_description', 'nov_description', 'disposition_comments', 'description'];
+    fieldsToRemove.forEach(field => {
+      if (sanitized[field] && typeof sanitized[field] === 'string' && sanitized[field].length > 100) {
+        sanitized[field] = sanitized[field].substring(0, 100) + '...';
+      }
+    });
+    
+    // Only show first few fields to avoid overwhelming logs
+    const keys = Object.keys(sanitized);
+    if (keys.length > 10) {
+      const limitedRecord: any = {};
+      keys.slice(0, 10).forEach(key => {
+        limitedRecord[key] = sanitized[key];
+      });
+      limitedRecord['...'] = `(${keys.length - 10} more fields)`;
+      return limitedRecord;
+    }
+    
+    return sanitized;
+  }
+
   private async logSync(syncLog: any) {
     await prisma.$executeRaw`
       INSERT INTO nyc_data_sync_logs (
@@ -308,6 +354,58 @@ export class NYCDataIngestionService {
   }
 
   // Get the last successful sync date for incremental updates
+  /**
+   * Test processing a single record to diagnose potential issues
+   */
+  async testRecordProcessing(datasetKey: keyof typeof NYC_DATASETS, sampleRecord: any, userId: string): Promise<{ success: boolean; error?: string; details?: any }> {
+    try {
+      const dataset = NYC_DATASETS[datasetKey];
+      console.log(`🧪 Testing record processing for ${dataset.name}...`);
+      
+      // Get the appropriate processing method
+      let processMethod: (record: any, userId: string) => Promise<void>;
+      
+      switch (datasetKey) {
+        case 'RESTAURANT_INSPECTIONS':
+          processMethod = this.processRestaurantInspectionRecord.bind(this);
+          break;
+        case 'PROPERTY_SALES':
+          processMethod = this.processPropertySaleRecord.bind(this);
+          break;
+        case 'DOB_NOW_PERMITS':
+          processMethod = this.processDOBPermitRecord.bind(this);
+          break;
+        case 'DOB_VIOLATIONS':
+          processMethod = this.processDOBViolationRecord.bind(this);
+          break;
+        default:
+          throw new Error(`Test not implemented for dataset: ${datasetKey}`);
+      }
+      
+      // Test the record processing
+      await processMethod(sampleRecord, userId);
+      
+      console.log('✅ Record processed successfully');
+      return { success: true };
+      
+    } catch (error) {
+      const errorMessage = error instanceof Error ? error.message : String(error);
+      console.error('❌ Record processing failed:', {
+        error: errorMessage,
+        record: this.sanitizeRecordForLogging(sampleRecord)
+      });
+      
+      return { 
+        success: false, 
+        error: errorMessage,
+        details: {
+          record: this.sanitizeRecordForLogging(sampleRecord),
+          stack: error instanceof Error ? error.stack : undefined
+        }
+      };
+    }
+  }
+
   async getLastSyncDate(datasetId: string): Promise<Date | null> {
     const result = await prisma.$queryRaw<Array<{ last_record_date: Date | null }>>`
       SELECT last_record_date 
@@ -684,7 +782,13 @@ export class NYCDataIngestionService {
               await processRecord(record, userId);
               syncLog.recordsAdded++;
             } catch (error) {
-              console.error(`Error processing ${dataset.name} record:`, error);
+              // Enhanced error logging with record details
+              const recordId = this.getRecordIdentifier(record, dataset);
+              console.error(`❌ Error processing ${dataset.name} record ${recordId}:`, {
+                error: error instanceof Error ? error.message : String(error),
+                record: this.sanitizeRecordForLogging(record),
+                stack: error instanceof Error ? error.stack : undefined
+              });
               syncLog.recordsFailed++;
             }
             syncLog.recordsProcessed++;
@@ -727,7 +831,19 @@ export class NYCDataIngestionService {
       syncLog.status = syncLog.recordsFailed === 0 ? 'success' : 'partial';
       syncLog.endTime = new Date();
 
-      console.log(`${dataset.name} sync completed. Processed: ${syncLog.recordsProcessed}, Added: ${syncLog.recordsAdded}, Failed: ${syncLog.recordsFailed}`);
+      const duration = Math.round((syncLog.endTime.getTime() - syncLog.startTime.getTime()) / 1000);
+      const successRate = syncLog.recordsProcessed > 0 ? Math.round((syncLog.recordsAdded / syncLog.recordsProcessed) * 100) : 0;
+      
+      console.log(`✅ ${dataset.name} sync completed:
+        📊 Processed: ${syncLog.recordsProcessed.toLocaleString()} records
+        ✅ Added: ${syncLog.recordsAdded.toLocaleString()} records
+        ❌ Failed: ${syncLog.recordsFailed.toLocaleString()} records
+        📈 Success Rate: ${successRate}%
+        ⏱️ Duration: ${duration}s`);
+
+      if (syncLog.recordsFailed > 0) {
+        console.warn(`⚠️ ${syncLog.recordsFailed} records failed during ${dataset.name} sync. Check the detailed error logs above for specific failure reasons.`);
+      }
 
     } catch (error) {
       syncLog.status = 'failed';
@@ -1093,6 +1209,11 @@ export class NYCDataIngestionService {
   private async processRestaurantInspectionRecord(record: any, userId: string) {
     if (!record.camis) {
       throw new Error('Missing CAMIS number');
+    }
+    
+    // Validate CAMIS format (should be numeric)
+    if (!/^\d+$/.test(record.camis.toString().trim())) {
+      throw new Error(`Invalid CAMIS format: ${record.camis}`);
     }
 
     const data = {
