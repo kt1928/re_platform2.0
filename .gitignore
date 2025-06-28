@@ -36,5 +36,15 @@ coverage/
 *.tgz
 *.tar.gz
 
+# Database Sync Files (temporary)
+*.sql
+backup_*
+*sync*.sh
+*test*.sh
+*assess*.sh
+*check*.sh
+*manual*.sh
+remote_test.sh
+
 # Prisma
 prisma/migrations/migration_lock.toml

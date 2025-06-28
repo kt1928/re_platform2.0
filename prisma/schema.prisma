@@ -630,6 +630,151 @@ model NYCDataSyncLog {
   @@map("nyc_data_sync_logs")
 }
 
+model NYCDataFreshness {
+  id                    String   @id @default(uuid()) @db.Uuid
+  datasetId             String   @unique @map("dataset_id") @db.VarChar(50)
+  datasetName           String   @map("dataset_name") @db.VarChar(255)
+  
+  // NYC Open Data source info
+  nycLastModified       DateTime? @map("nyc_last_modified") @db.Timestamptz(6)
+  nycRecordCount        Int?     @map("nyc_record_count")
+  nycDataVersion        String?  @map("nyc_data_version") @db.VarChar(100)
+  
+  // Our database info  
+  ourLastSync           DateTime? @map("our_last_sync") @db.Timestamptz(6)
+  ourRecordCount        Int?     @map("our_record_count")
+  ourLastRecordDate     DateTime? @map("our_last_record_date") @db.Timestamptz(6)
+  
+  // Freshness metrics
+  freshnessScore        Int      @default(0) @map("freshness_score") // 0-100
+  isStale               Boolean  @default(false) @map("is_stale")
+  staleSince            DateTime? @map("stale_since") @db.Timestamptz(6)
+  recommendSync         Boolean  @default(false) @map("recommend_sync")
+  
+  // Monitoring metadata
+  lastChecked           DateTime @default(now()) @map("last_checked") @db.Timestamptz(6)
+  checkInterval         Int      @default(21600) @map("check_interval") // seconds, default 6 hours
+  autoSyncEnabled       Boolean  @default(false) @map("auto_sync_enabled")
+  priority              Int      @default(50) @map("priority") // 1-100, higher = more important
+  
+  // Data quality metrics
+  syncSuccessRate       Decimal? @map("sync_success_rate") @db.Decimal(5, 2) // percentage
+  avgSyncDuration       Int?     @map("avg_sync_duration") // seconds
+  lastSyncStatus        String?  @map("last_sync_status") @db.VarChar(50)
+  
+  createdAt             DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt             DateTime @updatedAt @map("updated_at") @db.Timestamptz(6)
+  
+  // Relation to dynamic dataset configuration
+  datasetConfig         DatasetConfiguration? @relation(fields: [datasetId], references: [datasetId])
+  
+  @@index([isStale, priority])
+  @@index([recommendSync])
+  @@index([lastChecked])
+  @@map("nyc_data_freshness")
+}
+
+model DatasetConfiguration {
+  id                    String   @id @default(uuid()) @db.Uuid
+  datasetId             String   @unique @map("dataset_id") @db.VarChar(50)
+  datasetName           String   @map("dataset_name") @db.VarChar(255)
+  description           String?  @db.Text
+  category              String?  @db.VarChar(100)
+  tags                  String[] @map("tags")
+  
+  // NYC Open Data metadata
+  nycDomain             String   @map("nyc_domain") @db.VarChar(100) @default("data.cityofnewyork.us")
+  apiEndpoint           String   @map("api_endpoint") @db.VarChar(500)
+  webUrl                String?  @map("web_url") @db.VarChar(500)
+  
+  // Configuration settings
+  isActive              Boolean  @default(true) @map("is_active")
+  isBuiltIn             Boolean  @default(false) @map("is_built_in") // true for original 11 datasets
+  priority              Int      @default(50) @map("priority") // 1-100
+  syncEnabled           Boolean  @default(true) @map("sync_enabled")
+  autoSyncEnabled       Boolean  @default(false) @map("auto_sync_enabled")
+  checkInterval         Int      @default(21600) @map("check_interval") // seconds
+  
+  // Data processing configuration
+  tableName             String?  @map("table_name") @db.VarChar(100)
+  primaryKeyFields      String[] @map("primary_key_fields")
+  dateField             String?  @map("date_field") @db.VarChar(100) // field used for incremental sync
+  processingMethod      String?  @map("processing_method") @db.VarChar(100) // 'generic' or 'custom'
+  
+  // Field mappings and transformations (JSON configuration)
+  fieldMappings         Json?    @map("field_mappings") // source_field -> target_field mappings
+  validationRules       Json?    @map("validation_rules") // data validation configuration
+  transformationRules   Json?    @map("transformation_rules") // data transformation logic
+  
+  // Metadata
+  addedBy               String   @map("added_by") @db.VarChar(255)
+  discoveredAt          DateTime @default(now()) @map("discovered_at") @db.Timestamptz(6)
+  lastConfigUpdate      DateTime @default(now()) @map("last_config_update") @db.Timestamptz(6)
+  createdAt             DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt             DateTime @updatedAt @map("updated_at") @db.Timestamptz(6)
+  
+  // Relations
+  dataFreshness         NYCDataFreshness?
+  fieldSchemas          DatasetFieldSchema[]
+  
+  @@index([isActive, priority])
+  @@index([category])
+  @@index([isBuiltIn])
+  @@map("dataset_configurations")
+}
+
+model DatasetFieldSchema {
+  id                    String   @id @default(uuid()) @db.Uuid
+  datasetId             String   @map("dataset_id") @db.VarChar(50)
+  fieldName             String   @map("field_name") @db.VarChar(100)
+  fieldType             String   @map("field_type") @db.VarChar(50) // 'text', 'number', 'date', 'boolean'
+  description           String?  @db.Text
+  isRequired            Boolean  @default(false) @map("is_required")
+  isIndexed             Boolean  @default(false) @map("is_indexed")
+  
+  // Data validation
+  maxLength             Int?     @map("max_length")
+  pattern               String?  @db.VarChar(500) // regex pattern for validation
+  enumValues            String[] @map("enum_values") // allowed values for enum fields
+  
+  // Processing configuration
+  targetFieldName       String?  @map("target_field_name") @db.VarChar(100)
+  transformationRule    String?  @map("transformation_rule") @db.Text
+  skipField             Boolean  @default(false) @map("skip_field")
+  
+  // Metadata
+  detectedAt            DateTime @default(now()) @map("detected_at") @db.Timestamptz(6)
+  lastSeen              DateTime @default(now()) @map("last_seen") @db.Timestamptz(6)
+  
+  // Relations
+  dataset               DatasetConfiguration @relation(fields: [datasetId], references: [datasetId], onDelete: Cascade)
+  
+  @@unique([datasetId, fieldName])
+  @@index([fieldType])
+  @@index([isRequired])
+  @@map("dataset_field_schemas")
+}
+
+model GenericDatasetRecord {
+  id                    String   @id @default(uuid()) @db.Uuid
+  datasetId             String   @map("dataset_id") @db.VarChar(50)
+  recordId              String   @map("record_id") @db.VarChar(255) // original record identifier
+  recordData            Json     @map("record_data") // the actual data as JSON
+  recordHash            String   @map("record_hash") @db.VarChar(64) // hash for deduplication
+  
+  // Metadata
+  recordDate            DateTime? @map("record_date") @db.Timestamptz(6) // extracted date field
+  syncedAt              DateTime @default(now()) @map("synced_at") @db.Timestamptz(6)
+  lastUpdated           DateTime @default(now()) @map("last_updated") @db.Timestamptz(6)
+  isActive              Boolean  @default(true) @map("is_active")
+  
+  @@unique([datasetId, recordId])
+  @@index([datasetId, recordDate])
+  @@index([recordHash])
+  @@index([syncedAt])
+  @@map("generic_dataset_records")
+}
+
 // Census Bureau Data Models
 model CensusZipCodeData {
   id                      String   @id @default(uuid()) @db.Uuid
@@ -783,4 +928,106 @@ enum AnalysisType {
   COMPARABLE @map("comparable")
 
   @@map("analysis_type")
+}
+
+// ==========================================
+// CLEANED GEMS - Production Ready Datasets
+// ==========================================
+
+// Cleaned DOB Permits - Your production-ready gem (2.7M records)
+model CleanedDOBPermit {
+  id                String    @id @default(uuid()) @db.Uuid
+  jobNumber         String    @map("job_number") @db.VarChar(50)
+  jobType           String?   @map("job_type") @db.VarChar(100)
+  bin               String?   @db.VarChar(50)
+  houseNumber       String?   @map("house_number") @db.VarChar(50)
+  streetName        String?   @map("street_name") @db.VarChar(255)
+  borough           String?   @db.VarChar(20)
+  block             String?   @db.VarChar(50)
+  lot               String?   @db.VarChar(50)
+  buildingType      String?   @map("building_type") @db.VarChar(100)
+  preFilingDate     DateTime? @map("pre_filing_date") @db.Date
+  latestActionDate  DateTime? @map("latest_action_date") @db.Date
+  signoffDate       DateTime? @map("signoff_date") @db.Date
+  jobStatus         String?   @map("job_status") @db.VarChar(50)
+  ownerBusinessName String?   @map("owner_business_name") @db.VarChar(255)
+  zipCode           String?   @map("zip_code") @db.VarChar(10)
+  applicantFirstName String?  @map("applicant_first_name") @db.VarChar(100)
+  applicantLastName String?   @map("applicant_last_name") @db.VarChar(100)
+  initialCost       Decimal?  @map("initial_cost") @db.Decimal(12, 2)
+  latitude          Decimal?  @db.Decimal(10, 8)
+  longitude         Decimal?  @db.Decimal(11, 8)
+  address           String?   @db.VarChar(255)
+  dataSource        String    @default("cleaned_permits") @map("data_source") @db.VarChar(50)
+  createdAt         DateTime  @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt         DateTime  @updatedAt @map("updated_at") @db.Timestamptz(6)
+  
+  @@unique([jobNumber])
+  @@index([borough, block, lot])
+  @@index([zipCode])
+  @@index([preFilingDate])
+  @@index([bin])
+  @@map("cleaned_dob_permits")
+}
+
+// Cleaned Evictions - Critical risk assessment data (99K records)
+model CleanedEviction {
+  id                String    @id @default(uuid()) @db.Uuid
+  evictionAddress   String    @map("eviction_address") @db.VarChar(255)
+  executedDate      DateTime? @map("executed_date") @db.Date
+  residentialCommercial String? @map("residential_commercial") @db.VarChar(20)
+  borough           String?   @db.VarChar(20)
+  evictionPostcode  String?   @map("eviction_postcode") @db.VarChar(10)
+  bin               String?   @db.VarChar(50)
+  bbl               String?   @db.VarChar(50)
+  neighborhoods     String?   @db.VarChar(100)
+  dataSource        String    @default("cleaned_evictions") @map("data_source") @db.VarChar(50)
+  createdAt         DateTime  @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt         DateTime  @updatedAt @map("updated_at") @db.Timestamptz(6)
+  
+  @@unique([evictionAddress, executedDate])
+  @@index([borough])
+  @@index([bin])
+  @@index([executedDate])
+  @@index([evictionPostcode])
+  @@map("cleaned_evictions")
+}
+
+// Cleaned Violations - Building quality intelligence (1.75M records)
+model CleanedViolation {
+  id                String    @id @default(uuid()) @db.Uuid
+  bin               String?   @db.VarChar(50)
+  borough           String?   @db.VarChar(20)
+  block             String?   @db.VarChar(50)
+  lot               String?   @db.VarChar(50)
+  violationType     String?   @map("violation_type") @db.VarChar(100)
+  penaltyImposed    Decimal?  @map("penalty_imposed") @db.Decimal(10, 2)
+  address           String?   @db.VarChar(255)
+  issueYear         Int?      @map("issue_year")
+  issueMonth        Int?      @map("issue_month")
+  issueDay          Int?      @map("issue_day")
+  zipcode           String?   @db.VarChar(10)
+  dataSource        String    @default("cleaned_violations") @map("data_source") @db.VarChar(50)
+  createdAt         DateTime  @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt         DateTime  @updatedAt @map("updated_at") @db.Timestamptz(6)
+  
+  @@unique([bin, issueYear, issueMonth, issueDay, violationType])
+  @@index([borough, block, lot])
+  @@index([bin])
+  @@index([zipcode])
+  @@index([issueYear, issueMonth])
+  @@index([violationType])
+  @@map("cleaned_violations")
+}
+
+// Master BIN-Zipcode Reference - Critical infrastructure
+model BinZipcodeReference {
+  id        String   @id @default(uuid()) @db.Uuid
+  bin       String   @unique @db.VarChar(50)
+  zipcode   String   @db.VarChar(10)
+  dataSource String  @default("master_reference") @map("data_source") @db.VarChar(50)
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+  
+  @@index([zipcode])
+  @@map("bin_zipcode_reference")
 }

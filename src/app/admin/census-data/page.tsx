@@ -2,6 +2,7 @@
 
 import { useState, useEffect } from 'react';
 import Link from 'next/link';
+import ProgressBar, { useProgress } from '@/components/ProgressBar';
 
 interface CensusDataStatus {
   available_years: number[];
@@ -54,6 +55,10 @@ export default function CensusDataPage() {
   const [selectedState, setSelectedState] = useState<string>('');
   const [showLogs, setShowLogs] = useState(false);
   const [testingConnection, setTestingConnection] = useState(false);
+  const [showProgress, setShowProgress] = useState(false);
+  
+  // Progress state management
+  const { progress, updateProgress, resetProgress } = useProgress();
 
   useEffect(() => {
     fetchStatus();
@@ -155,8 +160,37 @@ export default function CensusDataPage() {
       return;
     }
 
+    // Initialize progress tracking
     setSyncing(true);
     setError(null);
+    setShowProgress(true);
+    resetProgress();
+    
+    const startTime = Date.now();
+    const expectedRecords = testMode ? 100 : (selectedState ? 1800 : 33000); // Rough estimates
+    
+    updateProgress({
+      percentage: 0,
+      current: 0,
+      total: expectedRecords,
+      message: 'Starting Census data sync...',
+      stage: 'Initializing'
+    });
+
+    // Simulated progress updates (since we don't have real-time progress from backend yet)
+    const progressInterval = setInterval(() => {
+      const elapsed = Date.now() - startTime;
+      const estimatedDuration = testMode ? 30000 : (selectedState ? 180000 : 600000); // 30s, 3m, 10m
+      const progressPercentage = Math.min((elapsed / estimatedDuration) * 95, 95); // Cap at 95% until real completion
+      
+      updateProgress({
+        percentage: progressPercentage,
+        current: Math.round((progressPercentage / 100) * expectedRecords),
+        message: progressPercentage < 30 ? 'Fetching data from Census API...' :
+                progressPercentage < 70 ? 'Processing ZIP codes...' : 'Storing records in database...',
+        stage: progressPercentage < 50 ? 'Data Retrieval' : 'Data Processing'
+      });
+    }, 1000);
 
     try {
       const token = localStorage.getItem('auth_token');
@@ -174,18 +208,43 @@ export default function CensusDataPage() {
         })
       });
 
+      clearInterval(progressInterval);
+
       if (!response.ok) {
         const errorData = await response.json();
         throw new Error(errorData.error?.message || 'Sync failed');
       }
 
       const data = await response.json();
+      
+      // Complete progress
+      updateProgress({
+        percentage: 100,
+        current: data.data.recordsAdded || expectedRecords,
+        message: `Successfully synced ${(data.data.recordsAdded || 0).toLocaleString()} records`,
+        stage: 'Completed'
+      });
+      
       setSyncResults(prev => [data.data, ...prev]);
+      
+      // Hide progress after 3 seconds
+      setTimeout(() => {
+        setShowProgress(false);
+      }, 3000);
       
       // Refresh status to update counts
       await fetchStatus();
     } catch (err) {
+      clearInterval(progressInterval);
       setError(err instanceof Error ? err.message : 'Sync failed');
+      updateProgress({
+        percentage: 0,
+        message: 'Sync failed',
+        stage: 'Error'
+      });
+      setTimeout(() => {
+        setShowProgress(false);
+      }, 3000);
     } finally {
       setSyncing(false);
     }
@@ -251,6 +310,22 @@ export default function CensusDataPage() {
         {error && (
           <div className="mb-6 p-4 bg-red-900/30 border border-red-700 rounded-md">
             <p className="text-red-400">Error: {error}</p>
+          </div>
+        )}
+
+        {/* Progress Bar */}
+        {showProgress && (
+          <div className="mb-6">
+            <ProgressBar 
+              progress={progress} 
+              title="Census Data Sync"
+              showDetails={true}
+              onCancel={() => {
+                setShowProgress(false);
+                setSyncing(false);
+                resetProgress();
+              }}
+            />
           </div>
         )}
 
@@ -471,7 +546,7 @@ export default function CensusDataPage() {
             <div>
               <p><strong className="text-white">Data Source:</strong> US Census Bureau American Community Survey (ACS) 5-Year Estimates</p>
               <p><strong className="text-white">Geography:</strong> ZIP Code Tabulation Areas (ZCTAs)</p>
-              <p><strong className="text-white">Available Years:</strong> 2009-2019 (ZCTAs discontinued in newer releases)</p>
+              <p><strong className="text-white">Available Years:</strong> 2011+ (ZCTAs available with varying API formats)</p>
               <p><strong className="text-white">Update Frequency:</strong> Annual (typically released with 1-2 year lag)</p>
             </div>
             

@@ -2,8 +2,10 @@ import { NextRequest, NextResponse } from 'next/server';
 import { verifyToken } from '@/lib/jwt';
 import { NYCDataIngestionService } from '@/lib/services/nyc-data-ingestion-service';
 import { prisma } from '@/lib/db';
+import { progressStore } from '@/app/api/v1/nyc-data/sync-progress/route';
 
-// Helper function to get last sync time
+// Helper function to get last sync time (currently unused but may be needed)
+// eslint-disable-next-line @typescript-eslint/no-unused-vars
 async function getLastSyncTime(datasetId: string): Promise<string | null> {
   try {
     const lastSync = await prisma.nYCDataSyncLog.findFirst({
@@ -43,7 +45,7 @@ export async function POST(request: NextRequest) {
     }
 
     const body = await request.json();
-    const { dataset, fullSync = false, limit } = body;
+    const { dataset, fullSync = false, limit, memoryOptimized = false, sessionId } = body;
 
     if (!dataset) {
       return NextResponse.json(
@@ -52,9 +54,32 @@ export async function POST(request: NextRequest) {
       );
     }
 
-    // Initialize the ingestion service
+    // Initialize progress tracking if sessionId provided
+    if (sessionId) {
+      // Map dataset to ID and name for progress tracking (corrected mappings)
+      const datasetMap: Record<string, { id: string; name: string }> = {
+        'property_sales': { id: 'usep-8jbt', name: 'NYC Citywide Rolling Calendar Sales' },
+        'dob_permits': { id: 'dq6g-a4sc', name: 'DOB NOW: All Approved Permits' },
+        'dob_violations': { id: '3h2n-5cm9', name: 'DOB Violations' },
+        'build_job_filings': { id: 'w9ak-ipjd', name: 'DOB Job Application Filings' },
+        'housing_maintenance_violations': { id: 'wvxf-dwi5', name: 'Housing Maintenance Code Violations' },
+        'complaint_data': { id: 'qgea-i56i', name: 'NYPD Complaint Data' },
+        'tax_debt_data': { id: '9rz4-mjek', name: 'Tax Debt/Water Debt Data' },
+        'business_licenses': { id: 'w7w3-xahh', name: 'Business Licenses' },
+        'event_permits': { id: 'tg4x-b46p', name: 'Event Permits' },
+        'build_job_filings': { id: 'w9ak-ipjd', name: 'DOB Job Filings' },
+        'restaurant_inspections': { id: '43nn-pn8j', name: 'Restaurant Inspections' }
+      };
+      
+      const datasetInfo = datasetMap[dataset];
+      if (datasetInfo) {
+        progressStore.createSession(sessionId, datasetInfo.id, datasetInfo.name);
+      }
+    }
+
+    // Initialize the ingestion service with auth token for progress updates
     const nycApiToken = process.env.NYC_OPENDATA_API_KEY;
-    const ingestionService = new NYCDataIngestionService(nycApiToken);
+    const ingestionService = new NYCDataIngestionService(nycApiToken, token);
 
     let result;
 
@@ -64,7 +89,9 @@ export async function POST(request: NextRequest) {
         const salesOptions = {
           fullSync,
           limit: limit ? parseInt(limit) : undefined,
-          fromDate: fullSync ? undefined : await ingestionService.getLastSyncDate('usep-8jbt')
+          fromDate: fullSync ? undefined : await ingestionService.getLastSyncDate('usep-8jbt'),
+          memoryOptimized,
+          sessionId
         };
         
         result = await ingestionService.ingestPropertySales(payload.userId, salesOptions);
@@ -74,7 +101,9 @@ export async function POST(request: NextRequest) {
         const permitsOptions = {
           fullSync,
           limit: limit ? parseInt(limit) : undefined,
-          fromDate: fullSync ? undefined : await ingestionService.getLastSyncDate('dq6g-a4sc')
+          fromDate: fullSync ? undefined : await ingestionService.getLastSyncDate('dq6g-a4sc'),
+          memoryOptimized,
+          sessionId
         };
         
         result = await ingestionService.ingestDOBPermits(payload.userId, permitsOptions);
@@ -84,37 +113,45 @@ export async function POST(request: NextRequest) {
         const violationsOptions = {
           fullSync,
           limit: limit ? parseInt(limit) : undefined,
-          fromDate: fullSync ? undefined : await ingestionService.getLastSyncDate('3h2n-5cm9')
+          fromDate: fullSync ? undefined : await ingestionService.getLastSyncDate('3h2n-5cm9'),
+          memoryOptimized,
+          sessionId
         };
         
         result = await ingestionService.ingestDOBViolations(payload.userId, violationsOptions);
         break;
 
-      case 'property_valuation_2024':
-        const val2024Options = {
+      case 'build_job_filings':
+        const buildOptions = {
           fullSync,
           limit: limit ? parseInt(limit) : undefined,
-          fromDate: fullSync ? undefined : await ingestionService.getLastSyncDate('rbx6-tga4')
+          fromDate: fullSync ? undefined : await ingestionService.getLastSyncDate('w9ak-ipjd'),
+          memoryOptimized,
+          sessionId
         };
         
-        result = await ingestionService.ingestPropertyValuation2024(payload.userId, val2024Options);
+        result = await ingestionService.ingestBuildJobFilings(payload.userId, buildOptions);
         break;
 
-      case 'property_valuation_2023':
-        const val2023Options = {
+      case 'housing_maintenance_violations':
+        const housingOptions = {
           fullSync,
           limit: limit ? parseInt(limit) : undefined,
-          fromDate: fullSync ? undefined : await ingestionService.getLastSyncDate('6z8x-wfk4')
+          fromDate: fullSync ? undefined : await ingestionService.getLastSyncDate('wvxf-dwi5'),
+          memoryOptimized,
+          sessionId
         };
         
-        result = await ingestionService.ingestPropertyValuation2023(payload.userId, val2023Options);
+        result = await ingestionService.ingestHousingMaintenanceViolations(payload.userId, housingOptions);
         break;
 
       case 'complaint_data':
         const complaintOptions = {
           fullSync,
           limit: limit ? parseInt(limit) : undefined,
-          fromDate: fullSync ? undefined : await ingestionService.getLastSyncDate('qgea-i56i')
+          fromDate: fullSync ? undefined : await ingestionService.getLastSyncDate('qgea-i56i'),
+          memoryOptimized,
+          sessionId
         };
         
         result = await ingestionService.ingestComplaintData(payload.userId, complaintOptions);
@@ -124,7 +161,9 @@ export async function POST(request: NextRequest) {
         const taxDebtOptions = {
           fullSync,
           limit: limit ? parseInt(limit) : undefined,
-          fromDate: fullSync ? undefined : await ingestionService.getLastSyncDate('9rz4-mjek')
+          fromDate: fullSync ? undefined : await ingestionService.getLastSyncDate('9rz4-mjek'),
+          memoryOptimized,
+          sessionId
         };
         
         result = await ingestionService.ingestTaxDebtData(payload.userId, taxDebtOptions);
@@ -134,7 +173,9 @@ export async function POST(request: NextRequest) {
         const businessOptions = {
           fullSync,
           limit: limit ? parseInt(limit) : undefined,
-          fromDate: fullSync ? undefined : await ingestionService.getLastSyncDate('w7w3-xahh')
+          fromDate: fullSync ? undefined : await ingestionService.getLastSyncDate('w7w3-xahh'),
+          memoryOptimized,
+          sessionId
         };
         
         result = await ingestionService.ingestBusinessLicenses(payload.userId, businessOptions);
@@ -144,27 +185,21 @@ export async function POST(request: NextRequest) {
         const eventOptions = {
           fullSync,
           limit: limit ? parseInt(limit) : undefined,
-          fromDate: fullSync ? undefined : await ingestionService.getLastSyncDate('tg4x-b46p')
+          fromDate: fullSync ? undefined : await ingestionService.getLastSyncDate('tg4x-b46p'),
+          memoryOptimized,
+          sessionId
         };
         
         result = await ingestionService.ingestEventPermits(payload.userId, eventOptions);
-        break;
-
-      case 'build_job_filings':
-        const buildOptions = {
-          fullSync,
-          limit: limit ? parseInt(limit) : undefined,
-          fromDate: fullSync ? undefined : await ingestionService.getLastSyncDate('w9ak-ipjd')
-        };
-        
-        result = await ingestionService.ingestBuildJobFilings(payload.userId, buildOptions);
         break;
 
       case 'restaurant_inspections':
         const restaurantOptions = {
           fullSync,
           limit: limit ? parseInt(limit) : undefined,
-          fromDate: fullSync ? undefined : await ingestionService.getLastSyncDate('43nn-pn8j')
+          fromDate: fullSync ? undefined : await ingestionService.getLastSyncDate('43nn-pn8j'),
+          memoryOptimized,
+          sessionId
         };
         
         result = await ingestionService.ingestRestaurantInspections(payload.userId, restaurantOptions);
@@ -229,7 +264,7 @@ export async function GET(request: NextRequest) {
 
     // Initialize the service
     const nycApiToken = process.env.NYC_OPENDATA_API_KEY;
-    const ingestionService = new NYCDataIngestionService(nycApiToken);
+    const ingestionService = new NYCDataIngestionService(nycApiToken, token);
 
     if (dataset) {
       // Get last sync info for specific dataset
@@ -245,13 +280,13 @@ export async function GET(request: NextRequest) {
       });
     }
 
-    // Define dataset to table mapping
+    // Define dataset to table mapping (corrected dataset IDs)
     const datasetTableMap: Record<string, { table: string; countQuery: string }> = {
       'usep-8jbt': { table: 'nyc_property_sales', countQuery: 'SELECT COUNT(*) as count FROM nyc_property_sales' },
-      'dq6g-a4sc': { table: 'nyc_dob_permits', countQuery: 'SELECT COUNT(*) as count FROM "NYCDOBPermit"' },
-      '3h2n-5cm9': { table: 'nyc_dob_violations', countQuery: 'SELECT COUNT(*) as count FROM "NYCDOBViolation"' },
-      'rbx6-tga4': { table: 'nyc_property_valuation_2024', countQuery: 'SELECT COUNT(*) as count FROM nyc_property_valuation_2024' },
-      '6z8x-wfk4': { table: 'nyc_property_valuation_2023', countQuery: 'SELECT COUNT(*) as count FROM nyc_property_valuation_2023' },
+      'dq6g-a4sc': { table: 'nyc_dob_permits', countQuery: 'SELECT COUNT(*) as count FROM nyc_dob_permits' },
+      '3h2n-5cm9': { table: 'nyc_dob_violations', countQuery: 'SELECT COUNT(*) as count FROM nyc_dob_violations' },
+      'w9ak-ipjd': { table: 'nyc_build_job_filings', countQuery: 'SELECT COUNT(*) as count FROM nyc_build_job_filings' },
+      'wvxf-dwi5': { table: 'nyc_housing_maintenance_violations', countQuery: 'SELECT COUNT(*) as count FROM nyc_housing_maintenance_violations' },
       'qgea-i56i': { table: 'nyc_complaint_data', countQuery: 'SELECT COUNT(*) as count FROM nyc_complaint_data' },
       '9rz4-mjek': { table: 'nyc_tax_debt_data', countQuery: 'SELECT COUNT(*) as count FROM nyc_tax_debt_data' },
       'w7w3-xahh': { table: 'nyc_business_licenses', countQuery: 'SELECT COUNT(*) as count FROM nyc_business_licenses' },
@@ -291,11 +326,11 @@ export async function GET(request: NextRequest) {
     });
     await Promise.all(nycCountPromises);
 
-    // Return available datasets and their status
+    // Return available datasets and their status (corrected dataset IDs and names)
     const datasets = [
-      { id: 'usep-8jbt', name: 'NYC Property Sales', key: 'property_sales' },
-      { id: 'rbx6-tga4', name: 'DOB NOW: Build – Approved Permits', key: 'property_valuation_2024' },
-      { id: '6z8x-wfk4', name: 'Evictions', key: 'property_valuation_2023' },
+      { id: 'usep-8jbt', name: 'NYC Citywide Rolling Calendar Sales', key: 'property_sales' },
+      { id: 'w9ak-ipjd', name: 'DOB Job Application Filings', key: 'build_job_filings' },
+      { id: 'wvxf-dwi5', name: 'Housing Maintenance Code Violations', key: 'housing_maintenance_violations' },
       { id: 'qgea-i56i', name: 'NYPD Complaint Data', key: 'complaint_data' },
       { id: 'dq6g-a4sc', name: 'DOB NOW: All Approved Permits', key: 'dob_permits' },
       { id: '9rz4-mjek', name: 'Tax Debt/Water Debt Data', key: 'tax_debt_data' },

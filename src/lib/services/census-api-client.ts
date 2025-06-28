@@ -1,3 +1,5 @@
+import { ZipToStateMapper } from './zip-to-state-mapper';
+
 interface CensusVariable {
   code: string;
   description: string;
@@ -97,9 +99,16 @@ export class CensusApiClient {
 
   /**
    * Fetch census data for ZIP Code Tabulation Areas (ZCTAs)
-   * Note: ZCTAs are only available in 2019 ACS 5-Year data and earlier
+   * Note: ZCTAs are available in 2011+ ACS 5-Year data with varying response formats
    */
-  async fetchZipCodeData(year: number = 2019, state?: string, testMode: boolean = false): Promise<CensusData[]> {
+  async fetchZipCodeData(year: number = 2019, stateFilter?: string, testMode: boolean = false): Promise<CensusData[]> {
+    // Validate year is supported
+    const availableYears = this.getAvailableYears();
+    if (year < 2011 || year > Math.max(...availableYears)) {
+      throw new Error(`Year ${year} is not supported. ZCTA data is only available from 2011-${Math.max(...availableYears)}. Available years: ${availableYears.join(', ')}`);
+    }
+    
+    console.log(`Fetching Census data for year ${year} - this year ${year >= 2011 ? 'IS' : 'IS NOT'} supported for ZCTA geography`);
     // In test mode, only fetch a few key variables
     const allVariables = testMode 
       ? ['B01003_001E', 'B19013_001E', 'B25003_002E'] // Just 3 key variables for testing
@@ -111,7 +120,7 @@ export class CensusApiClient {
       chunks.push(allVariables.slice(i, i + chunkSize));
     }
 
-    console.log(`Fetching Census data in ${chunks.length} chunks for year ${year}${state ? ` (state: ${state})` : ''}`);
+    console.log(`Fetching Census data in ${chunks.length} chunks for year ${year}${stateFilter ? ` (state: ${stateFilter})` : ''}`);
 
     try {
       let allResults: CensusData[] = [];
@@ -120,13 +129,13 @@ export class CensusApiClient {
         const variables = chunks[chunkIndex].join(',');
         
         let url = `${this.baseUrl}/${year}/acs/acs5`;
+        
+        // Census API automatically includes geographic identifiers in response
+        // Only request the actual variables - geography is added automatically
         let params = new URLSearchParams({
-          get: `${variables},state,zip code tabulation area`,
+          get: variables,  // Just the variables, no geography
           for: 'zip code tabulation area:*'
         });
-
-        // Note: Removed state filtering from API call due to 204 responses
-        // Will filter by state in post-processing instead
 
         if (this.apiKey) {
           params.set('key', this.apiKey);
@@ -137,7 +146,36 @@ export class CensusApiClient {
 
         const response = await fetch(url);
         
-        if (!response.ok) {
+        // Handle different HTTP status codes
+        if (response.status === 202) {
+          // 202 Accepted - Census API is processing the request asynchronously
+          console.log(`Census API accepted request for processing (chunk ${chunkIndex + 1}). Polling for completion...`);
+          
+          // Wait and retry the same request (Census API will return data when ready)
+          await new Promise(resolve => setTimeout(resolve, 5000)); // Wait 5 seconds
+          const retryResponse = await fetch(url);
+          
+          if (retryResponse.status === 202) {
+            // Still processing, try one more time with longer wait
+            console.log(`Census API still processing (chunk ${chunkIndex + 1}). Waiting 10 seconds...`);
+            await new Promise(resolve => setTimeout(resolve, 10000)); // Wait 10 seconds
+            const finalResponse = await fetch(url);
+            
+            if (!finalResponse.ok) {
+              const errorText = await finalResponse.text();
+              throw new Error(`Census API error after polling (chunk ${chunkIndex + 1}): ${finalResponse.status} ${finalResponse.statusText} - ${errorText}`);
+            }
+            
+            // Use the final successful response
+            Object.assign(response, finalResponse);
+          } else if (!retryResponse.ok) {
+            const errorText = await retryResponse.text();
+            throw new Error(`Census API error after retry (chunk ${chunkIndex + 1}): ${retryResponse.status} ${retryResponse.statusText} - ${errorText}`);
+          } else {
+            // Retry was successful, use it
+            Object.assign(response, retryResponse);
+          }
+        } else if (!response.ok) {
           const errorText = await response.text();
           throw new Error(`Census API error (chunk ${chunkIndex + 1}): ${response.status} ${response.statusText} - ${errorText}`);
         }
@@ -150,6 +188,9 @@ export class CensusApiClient {
           continue;
         }
 
+        // Log first 200 chars of response for debugging
+        console.log(`Response preview (first 200 chars): ${responseText.substring(0, 200)}...`);
+
         const rawData: (string | number)[][] = JSON.parse(responseText);
         
         if (!rawData || rawData.length === 0) {
@@ -159,6 +200,9 @@ export class CensusApiClient {
         // First row contains column headers
         const headers = rawData[0] as string[];
         const dataRows = rawData.slice(1);
+        
+        console.log(`Headers found: [${headers.join(', ')}]`);
+        console.log(`Processing ${dataRows.length} data rows`);
 
         const chunkResults: CensusData[] = dataRows.map(row => {
           const record: CensusData = {
@@ -179,8 +223,25 @@ export class CensusApiClient {
             }
           });
 
+          // Handle state assignment based on year and data availability
+          if (year >= 2020) {
+            // For 2020+, use ZIP code mapping to determine actual state
+            const stateMapping = ZipToStateMapper.getStateFromZip(record.zipCode);
+            if (stateMapping) {
+              record.state = stateMapping.state;
+            } else {
+              record.state = 'XX'; // Unknown state
+            }
+          } else if (stateFilter && !record.state) {
+            // For pre-2020, if state filtering was requested but API didn't return state
+            record.state = stateFilter;
+          } else if (!record.state && record.zipCode) {
+            // Final fallback
+            record.state = '00';
+          }
+
           return record;
-        }).filter(record => record.zipCode && record.state);
+        }).filter(record => record.zipCode);
 
         // Merge with existing results
         if (chunkIndex === 0) {
@@ -209,10 +270,11 @@ export class CensusApiClient {
         }
       }
 
-      // Filter by state if specified
-      if (state) {
-        allResults = allResults.filter(record => record.state === state);
-        console.log(`Filtered to ${allResults.length} ZIP code records for state ${state}`);
+      // Filter by state if specified (now works for all years)
+      if (stateFilter) {
+        const beforeFilter = allResults.length;
+        allResults = allResults.filter(record => record.state === stateFilter);
+        console.log(`Filtered from ${beforeFilter.toLocaleString()} to ${allResults.length.toLocaleString()} records for state ${stateFilter}`);
       }
 
       console.log(`Successfully fetched ${allResults.length} ZIP code records for year ${year}`);
@@ -228,11 +290,17 @@ export class CensusApiClient {
    * Get available years for ACS 5-Year data with ZCTA support
    */
   getAvailableYears(): number[] {
-    // ACS 5-Year data with ZCTAs is available from 2009 to 2019
-    // Note: ZCTAs were discontinued in ACS releases after 2019
+    // ACS 5-Year data with ZCTAs is available from 2011 onwards
+    // 2009-2010 do not support ZCTA geography at all
+    // ACS 5-Year data has a 2+ year lag: 2022 data released in late 2023, 2023 data in late 2024
     const years: number[] = [];
+    const currentYear = new Date().getFullYear();
     
-    for (let year = 2009; year <= 2019; year++) {
+    // Conservative approach: latest data is typically 2 years behind
+    // As of 2025, latest available should be 2023
+    const latestDataYear = Math.min(currentYear - 2, 2023); // Cap at 2023 until confirmed
+    
+    for (let year = 2011; year <= latestDataYear; year++) {
       years.push(year);
     }
     
@@ -244,8 +312,8 @@ export class CensusApiClient {
    */
   async testConnection(): Promise<boolean> {
     try {
-      // Test with a simple query for a specific ZIP code using 2019 data
-      const testUrl = `${this.baseUrl}/2019/acs/acs5?get=B01003_001E&for=zip code tabulation area:10001&in=state:36${this.apiKey ? `&key=${this.apiKey}` : ''}`;
+      // Test with a simple query for a specific ZIP code using 2019 data (known working)
+      const testUrl = `${this.baseUrl}/2019/acs/acs5?get=B01003_001E&for=zip code tabulation area:*${this.apiKey ? `&key=${this.apiKey}` : ''}`;
       
       const response = await fetch(testUrl);
       const success = response.ok;
@@ -254,7 +322,9 @@ export class CensusApiClient {
         const errorText = await response.text();
         console.error(`Census API test failed: ${response.status} ${response.statusText} - ${errorText}`);
       } else {
-        console.log('Census API connection test successful');
+        const data = await response.text();
+        const parsed = JSON.parse(data);
+        console.log(`Census API connection test successful - got ${parsed.length - 1} ZIP codes`);
       }
       
       return success;

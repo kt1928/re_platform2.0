@@ -4,9 +4,45 @@ import { v4 as uuidv4 } from 'uuid';
 
 export class NYCDataIngestionService {
   private client: NYCOpenDataClient;
+  private progressUpdateUrl = '/api/v1/nyc-data/sync-progress';
+  private authToken?: string;
 
-  constructor(appToken?: string) {
+  constructor(appToken?: string, authToken?: string) {
     this.client = new NYCOpenDataClient(appToken);
+    this.authToken = authToken;
+  }
+
+  /**
+   * Update sync progress directly via progress store
+   */
+  private async updateProgress(sessionId: string, action: string, data: any) {
+    try {
+      // Import progressStore dynamically to avoid circular dependencies
+      const { progressStore } = await import('@/app/api/v1/nyc-data/sync-progress/route');
+      
+      switch (action) {
+        case 'update':
+          progressStore.updateProgress(sessionId, data);
+          break;
+        case 'complete':
+          progressStore.updateProgress(sessionId, { 
+            status: 'completed', 
+            percentage: 100,
+            ...data 
+          });
+          break;
+        case 'error':
+          const currentProgress = progressStore.getProgress(sessionId);
+          progressStore.updateProgress(sessionId, { 
+            status: 'failed', 
+            errors: [...(currentProgress?.errors || []), data.error] 
+          });
+          break;
+      }
+    } catch (error) {
+      console.warn('Failed to update progress:', error);
+      // Don't fail the sync if progress updates fail
+    }
   }
 
   async ingestPropertySales(
@@ -15,6 +51,8 @@ export class NYCDataIngestionService {
       fullSync?: boolean;
       fromDate?: Date;
       limit?: number;
+      memoryOptimized?: boolean;
+      sessionId?: string;
     } = {}
   ) {
     const startTime = new Date();
@@ -35,6 +73,13 @@ export class NYCDataIngestionService {
 
     try {
       console.log(`Starting ${syncLog.syncType} sync for NYC Property Sales...`);
+      
+      // Initialize progress tracking
+      if (options.sessionId) {
+        await this.updateProgress(options.sessionId, 'update', {
+          status: 'starting'
+        });
+      }
 
       // Build query parameters
       const params: Record<string, any> = {
@@ -45,9 +90,8 @@ export class NYCDataIngestionService {
         params.$where = `sale_date > '${options.fromDate.toISOString().split('T')[0]}'`;
       }
 
-      if (options.limit) {
-        params.$limit = options.limit;
-      }
+      // Note: Don't set $limit in params for full sync - it conflicts with batch processing
+      // The limit option is passed to fetchAllRecords as maxRecords for testing only
 
       // Process in batches with improved pagination and error handling
       await this.client.fetchAllRecords(
@@ -56,10 +100,25 @@ export class NYCDataIngestionService {
         async (batch, offset, progress) => {
           console.log(`Processing batch of ${batch.length} records (progress: ${progress.current}/${progress.estimated || '?'})`);
           
+          // Update progress tracking
+          if (options.sessionId) {
+            await this.updateProgress(options.sessionId, 'update', {
+              status: 'processing',
+              estimatedTotal: progress.estimated || progress.current,
+              processedRecords: progress.current,
+              currentBatch: Math.floor(offset / batch.length) + 1,
+              totalBatches: progress.estimated ? Math.ceil(progress.estimated / batch.length) : undefined
+            });
+          }
+          
           for (const record of batch) {
             try {
-              await this.processPropertySaleRecord(record, userId);
-              syncLog.recordsAdded++;
+              const operation = await this.processPropertySaleRecord(record, userId);
+              if (operation === 'inserted') {
+                syncLog.recordsAdded++;
+              } else {
+                syncLog.recordsUpdated++;
+              }
             } catch (error) {
               console.error('Error processing record:', error);
               syncLog.recordsFailed++;
@@ -79,23 +138,44 @@ export class NYCDataIngestionService {
           }
         },
         {
-          maxRecords: options.limit,
-          batchSize: options.fullSync ? 10000 : 5000,
+          maxRecords: options.limit, // Only limit total records if explicitly set for testing
+          batchSize: options.memoryOptimized ? 500 : (options.fullSync ? 2000 : 1000), // Controls memory usage and DB write frequency
           retryAttempts: 3,
-          streamMode: true
+          streamMode: true,
+          memoryOptimized: options.memoryOptimized || false
         }
       );
 
       syncLog.status = syncLog.recordsFailed === 0 ? 'success' : 'partial';
       syncLog.endTime = new Date();
+      
+      // Update progress to completed
+      if (options.sessionId) {
+        await this.updateProgress(options.sessionId, 'complete', {
+          processedRecords: syncLog.recordsProcessed,
+          recordsAdded: syncLog.recordsAdded,
+          recordsUpdated: syncLog.recordsUpdated,
+          recordsFailed: syncLog.recordsFailed
+        });
+      }
 
-      console.log(`Sync completed. Processed: ${syncLog.recordsProcessed}, Added: ${syncLog.recordsAdded}, Failed: ${syncLog.recordsFailed}`);
+      const lastRecordStr = syncLog.lastRecordDate 
+        ? ` | Last record: ${syncLog.lastRecordDate.toISOString().split('T')[0]}`
+        : '';
+      console.log(`Sync completed. Processed: ${syncLog.recordsProcessed}, Added: ${syncLog.recordsAdded}, Updated: ${syncLog.recordsUpdated}, Failed: ${syncLog.recordsFailed}${lastRecordStr}`);
 
     } catch (error) {
       syncLog.status = 'failed';
       syncLog.errorMessage = error instanceof Error ? error.message : 'Unknown error';
       syncLog.endTime = new Date();
       console.error('Sync failed:', error);
+      
+      // Update progress to failed
+      if (options.sessionId) {
+        await this.updateProgress(options.sessionId, 'error', {
+          error: error instanceof Error ? error.message : 'Unknown error'
+        });
+      }
     }
 
     // Log the sync operation
@@ -143,41 +223,47 @@ export class NYCDataIngestionService {
       dataSourceId: NYC_DATASETS.PROPERTY_SALES.id
     };
 
-    // Insert or update the record
-    await prisma.$executeRaw`
-      INSERT INTO nyc_property_sales (
-        id, borough, neighborhood, building_class_name, tax_class_at_sale,
-        block, lot, easement, building_class_at_sale, address,
-        apartment_number, zip_code, residential_units, commercial_units,
-        total_units, land_square_feet, gross_square_feet, year_built,
-        tax_class_at_time, building_class_at_time, sale_price, sale_date,
-        data_source_id, created_at, updated_at
-      ) VALUES (
-        ${uuidv4()}::uuid, ${data.borough}, ${data.neighborhood}, ${data.buildingClassName}, 
-        ${data.taxClassAtSale}, ${data.block}, ${data.lot}, ${data.easement}, 
-        ${data.buildingClassAtSale}, ${data.address}, ${data.apartmentNumber}, 
-        ${data.zipCode}, ${data.residentialUnits}, ${data.commercialUnits}, 
-        ${data.totalUnits}, ${data.landSquareFeet}, ${data.grossSquareFeet}, 
-        ${data.yearBuilt}, ${data.taxClassAtTime}, ${data.buildingClassAtTime}, 
-        ${data.salePrice}, ${data.saleDate}, ${data.dataSourceId}, NOW(), NOW()
+    // Insert or update the record and return operation type
+    const result = await prisma.$queryRaw<Array<{ operation: string }>>`
+      WITH upsert_result AS (
+        INSERT INTO nyc_property_sales (
+          id, borough, neighborhood, building_class_name, tax_class_at_sale,
+          block, lot, easement, building_class_at_sale, address,
+          apartment_number, zip_code, residential_units, commercial_units,
+          total_units, land_square_feet, gross_square_feet, year_built,
+          tax_class_at_time, building_class_at_time, sale_price, sale_date,
+          data_source_id, created_at, updated_at
+        ) VALUES (
+          ${uuidv4()}::uuid, ${data.borough}, ${data.neighborhood}, ${data.buildingClassName}, 
+          ${data.taxClassAtSale}, ${data.block}, ${data.lot}, ${data.easement}, 
+          ${data.buildingClassAtSale}, ${data.address}, ${data.apartmentNumber}, 
+          ${data.zipCode}, ${data.residentialUnits}, ${data.commercialUnits}, 
+          ${data.totalUnits}, ${data.landSquareFeet}, ${data.grossSquareFeet}, 
+          ${data.yearBuilt}, ${data.taxClassAtTime}, ${data.buildingClassAtTime}, 
+          ${data.salePrice}, ${data.saleDate}, ${data.dataSourceId}, NOW(), NOW()
+        )
+        ON CONFLICT (borough, block, lot, sale_date) 
+        DO UPDATE SET
+          neighborhood = EXCLUDED.neighborhood,
+          building_class_name = EXCLUDED.building_class_name,
+          tax_class_at_sale = EXCLUDED.tax_class_at_sale,
+          address = EXCLUDED.address,
+          apartment_number = EXCLUDED.apartment_number,
+          zip_code = EXCLUDED.zip_code,
+          residential_units = EXCLUDED.residential_units,
+          commercial_units = EXCLUDED.commercial_units,
+          total_units = EXCLUDED.total_units,
+          land_square_feet = EXCLUDED.land_square_feet,
+          gross_square_feet = EXCLUDED.gross_square_feet,
+          year_built = EXCLUDED.year_built,
+          sale_price = EXCLUDED.sale_price,
+          updated_at = NOW()
+        RETURNING (CASE WHEN xmax = 0 THEN 'inserted' ELSE 'updated' END) as operation
       )
-      ON CONFLICT (borough, block, lot, sale_date) 
-      DO UPDATE SET
-        neighborhood = EXCLUDED.neighborhood,
-        building_class_name = EXCLUDED.building_class_name,
-        tax_class_at_sale = EXCLUDED.tax_class_at_sale,
-        address = EXCLUDED.address,
-        apartment_number = EXCLUDED.apartment_number,
-        zip_code = EXCLUDED.zip_code,
-        residential_units = EXCLUDED.residential_units,
-        commercial_units = EXCLUDED.commercial_units,
-        total_units = EXCLUDED.total_units,
-        land_square_feet = EXCLUDED.land_square_feet,
-        gross_square_feet = EXCLUDED.gross_square_feet,
-        year_built = EXCLUDED.year_built,
-        sale_price = EXCLUDED.sale_price,
-        updated_at = NOW()
+      SELECT operation FROM upsert_result
     `;
+
+    return result[0]?.operation || 'inserted';
 
     // Also create/update a property record if we have enough data
     if (data.address && data.zipCode) {
@@ -425,80 +511,11 @@ export class NYCDataIngestionService {
       fullSync?: boolean;
       fromDate?: Date;
       limit?: number;
+      memoryOptimized?: boolean;
+      sessionId?: string;
     } = {}
   ) {
-    const startTime = new Date();
-    const syncLog = {
-      datasetId: NYC_DATASETS.DOB_NOW_PERMITS.id,
-      datasetName: NYC_DATASETS.DOB_NOW_PERMITS.name,
-      syncType: options.fullSync ? 'full' : 'incremental',
-      recordsProcessed: 0,
-      recordsAdded: 0,
-      recordsUpdated: 0,
-      recordsFailed: 0,
-      startTime,
-      endTime: new Date(),
-      status: 'in_progress' as const,
-      errorMessage: null,
-      lastRecordDate: null as Date | null
-    };
-
-    try {
-      console.log(`Starting ${syncLog.syncType} sync for DOB Permits...`);
-
-      const params: Record<string, any> = {
-        $order: 'approved_date DESC'
-      };
-
-      if (!options.fullSync && options.fromDate) {
-        params.$where = `approved_date > '${options.fromDate.toISOString().split('T')[0]}'`;
-      }
-
-      if (options.limit) {
-        params.$limit = options.limit;
-      }
-
-      await this.client.fetchAllRecords(
-        NYC_DATASETS.DOB_NOW_PERMITS,
-        params,
-        async (batch, offset) => {
-          for (const record of batch) {
-            try {
-              await this.processDOBPermitRecord(record, userId);
-              syncLog.recordsAdded++;
-            } catch (error) {
-              console.error('Error processing DOB permit record:', error);
-              syncLog.recordsFailed++;
-            }
-            syncLog.recordsProcessed++;
-          }
-
-          if (batch.length > 0) {
-            const lastRecord = batch[batch.length - 1];
-            if (lastRecord.approved_date) {
-              const recordDate = new Date(lastRecord.approved_date);
-              if (!syncLog.lastRecordDate || recordDate > syncLog.lastRecordDate) {
-                syncLog.lastRecordDate = recordDate;
-              }
-            }
-          }
-        }
-      );
-
-      syncLog.status = syncLog.recordsFailed === 0 ? 'success' : 'partial';
-      syncLog.endTime = new Date();
-
-      console.log(`DOB Permits sync completed. Processed: ${syncLog.recordsProcessed}, Added: ${syncLog.recordsAdded}, Failed: ${syncLog.recordsFailed}`);
-
-    } catch (error) {
-      syncLog.status = 'failed';
-      syncLog.errorMessage = error instanceof Error ? error.message : 'Unknown error';
-      syncLog.endTime = new Date();
-      console.error('DOB Permits sync failed:', error);
-    }
-
-    await this.logSync(syncLog);
-    return syncLog;
+    return this.ingestGenericDataset('DOB_NOW_PERMITS', 'nyc_dob_permits', userId, options, this.processDOBPermitRecord.bind(this));
   }
 
   async ingestDOBViolations(
@@ -507,89 +524,11 @@ export class NYCDataIngestionService {
       fullSync?: boolean;
       fromDate?: Date;
       limit?: number;
+      memoryOptimized?: boolean;
+      sessionId?: string;
     } = {}
   ) {
-    const startTime = new Date();
-    const syncLog = {
-      datasetId: NYC_DATASETS.DOB_VIOLATIONS.id,
-      datasetName: NYC_DATASETS.DOB_VIOLATIONS.name,
-      syncType: options.fullSync ? 'full' : 'incremental',
-      recordsProcessed: 0,
-      recordsAdded: 0,
-      recordsUpdated: 0,
-      recordsFailed: 0,
-      startTime,
-      endTime: new Date(),
-      status: 'in_progress' as const,
-      errorMessage: null,
-      lastRecordDate: null as Date | null
-    };
-
-    try {
-      console.log(`Starting ${syncLog.syncType} sync for DOB Violations...`);
-
-      const params: Record<string, any> = {
-        $order: 'issue_date DESC'
-      };
-
-      if (!options.fullSync && options.fromDate) {
-        // DOB Violations use YYYYMMDD format
-        const dateStr = options.fromDate.toISOString().slice(0, 10).replace(/-/g, '');
-        params.$where = `issue_date > '${dateStr}'`;
-      }
-
-      if (options.limit) {
-        params.$limit = options.limit;
-      }
-
-      await this.client.fetchAllRecords(
-        NYC_DATASETS.DOB_VIOLATIONS,
-        params,
-        async (batch, offset) => {
-          for (const record of batch) {
-            try {
-              await this.processDOBViolationRecord(record, userId);
-              syncLog.recordsAdded++;
-            } catch (error) {
-              console.error('Error processing DOB violation record:', error);
-              syncLog.recordsFailed++;
-            }
-            syncLog.recordsProcessed++;
-          }
-
-          if (batch.length > 0) {
-            const lastRecord = batch[batch.length - 1];
-            if (lastRecord.issue_date) {
-              // Convert YYYYMMDD to Date
-              const dateStr = lastRecord.issue_date;
-              if (dateStr && dateStr.length === 8) {
-                const year = parseInt(dateStr.substring(0, 4));
-                const month = parseInt(dateStr.substring(4, 6)) - 1; // Month is 0-indexed
-                const day = parseInt(dateStr.substring(6, 8));
-                const recordDate = new Date(year, month, day);
-                if (!syncLog.lastRecordDate || recordDate > syncLog.lastRecordDate) {
-                  syncLog.lastRecordDate = recordDate;
-                }
-              }
-            }
-          }
-        }
-      );
-
-      syncLog.status = syncLog.recordsFailed === 0 ? 'success' : 'partial';
-      syncLog.endTime = new Date();
-
-      console.log(`DOB Violations sync completed. Processed: ${syncLog.recordsProcessed}, Added: ${syncLog.recordsAdded}, Failed: ${syncLog.recordsFailed}`);
-
-    } catch (error) {
-      syncLog.status = 'failed';
-      syncLog.errorMessage = error instanceof Error ? error.message : 'Unknown error';
-      syncLog.endTime = new Date();
-      console.error('DOB Violations sync failed:', error);
-    }
-
-    await this.logSync(syncLog);
-    return syncLog;
+    return this.ingestGenericDataset('DOB_VIOLATIONS', 'nyc_dob_violations', userId, options, this.processDOBViolationRecord.bind(this));
   }
 
   private async processDOBPermitRecord(record: any, userId: string) {
@@ -688,36 +627,40 @@ export class NYCDataIngestionService {
   }
 
   // Additional dataset ingestion methods
-  async ingestPropertyValuation2024(userId: string, options: { fullSync?: boolean; fromDate?: Date; limit?: number; } = {}) {
+  async ingestPropertyValuation2024(userId: string, options: { fullSync?: boolean; fromDate?: Date; limit?: number; memoryOptimized?: boolean; sessionId?: string; } = {}) {
     return this.ingestGenericDataset('PROPERTY_VALUATION_FY2024', 'nyc_property_valuation_2024', userId, options, this.processPropertyValuation2024Record.bind(this));
   }
 
-  async ingestPropertyValuation2023(userId: string, options: { fullSync?: boolean; fromDate?: Date; limit?: number; } = {}) {
+  async ingestPropertyValuation2023(userId: string, options: { fullSync?: boolean; fromDate?: Date; limit?: number; memoryOptimized?: boolean; sessionId?: string; } = {}) {
     return this.ingestGenericDataset('PROPERTY_VALUATION_FY2023', 'nyc_property_valuation_2023', userId, options, this.processPropertyValuation2023Record.bind(this));
   }
 
-  async ingestComplaintData(userId: string, options: { fullSync?: boolean; fromDate?: Date; limit?: number; } = {}) {
+  async ingestComplaintData(userId: string, options: { fullSync?: boolean; fromDate?: Date; limit?: number; memoryOptimized?: boolean; sessionId?: string; } = {}) {
     return this.ingestGenericDataset('COMPLAINT_DATA', 'nyc_complaint_data', userId, options, this.processComplaintDataRecord.bind(this));
   }
 
-  async ingestTaxDebtData(userId: string, options: { fullSync?: boolean; fromDate?: Date; limit?: number; } = {}) {
+  async ingestTaxDebtData(userId: string, options: { fullSync?: boolean; fromDate?: Date; limit?: number; memoryOptimized?: boolean; sessionId?: string; } = {}) {
     return this.ingestGenericDataset('TAX_DEBT_DATA', 'nyc_tax_debt_data', userId, options, this.processTaxDebtDataRecord.bind(this));
   }
 
-  async ingestBusinessLicenses(userId: string, options: { fullSync?: boolean; fromDate?: Date; limit?: number; } = {}) {
+  async ingestBusinessLicenses(userId: string, options: { fullSync?: boolean; fromDate?: Date; limit?: number; memoryOptimized?: boolean; sessionId?: string; } = {}) {
     return this.ingestGenericDataset('BUSINESS_LICENSES', 'nyc_business_licenses', userId, options, this.processBusinessLicenseRecord.bind(this));
   }
 
-  async ingestEventPermits(userId: string, options: { fullSync?: boolean; fromDate?: Date; limit?: number; } = {}) {
+  async ingestEventPermits(userId: string, options: { fullSync?: boolean; fromDate?: Date; limit?: number; memoryOptimized?: boolean; sessionId?: string; } = {}) {
     return this.ingestGenericDataset('EVENT_PERMITS', 'nyc_event_permits', userId, options, this.processEventPermitRecord.bind(this));
   }
 
-  async ingestBuildJobFilings(userId: string, options: { fullSync?: boolean; fromDate?: Date; limit?: number; } = {}) {
+  async ingestBuildJobFilings(userId: string, options: { fullSync?: boolean; fromDate?: Date; limit?: number; memoryOptimized?: boolean; sessionId?: string; } = {}) {
     return this.ingestGenericDataset('BUILD_JOB_FILINGS', 'nyc_build_job_filings', userId, options, this.processBuildJobFilingRecord.bind(this));
   }
 
-  async ingestRestaurantInspections(userId: string, options: { fullSync?: boolean; fromDate?: Date; limit?: number; } = {}) {
+  async ingestRestaurantInspections(userId: string, options: { fullSync?: boolean; fromDate?: Date; limit?: number; memoryOptimized?: boolean; sessionId?: string; } = {}) {
     return this.ingestGenericDataset('RESTAURANT_INSPECTIONS', 'nyc_restaurant_inspections', userId, options, this.processRestaurantInspectionRecord.bind(this));
+  }
+
+  async ingestHousingMaintenanceViolations(userId: string, options: { fullSync?: boolean; fromDate?: Date; limit?: number; memoryOptimized?: boolean; sessionId?: string; } = {}) {
+    return this.ingestGenericDataset('HOUSING_MAINTENANCE', 'nyc_housing_maintenance_violations', userId, options, this.processHousingMaintenanceRecord.bind(this));
   }
 
   // Generic ingestion method to reduce code duplication
@@ -725,7 +668,7 @@ export class NYCDataIngestionService {
     datasetKey: keyof typeof NYC_DATASETS,
     tableName: string,
     userId: string,
-    options: { fullSync?: boolean; fromDate?: Date; limit?: number; },
+    options: { fullSync?: boolean; fromDate?: Date; limit?: number; memoryOptimized?: boolean; sessionId?: string; },
     processRecord: (record: any, userId: string) => Promise<void>
   ) {
     const dataset = NYC_DATASETS[datasetKey];
@@ -747,6 +690,13 @@ export class NYCDataIngestionService {
 
     try {
       console.log(`Starting ${syncLog.syncType} sync for ${dataset.name}...`);
+      
+      // Initialize progress tracking
+      if (options.sessionId) {
+        await this.updateProgress(options.sessionId, 'update', {
+          status: 'starting'
+        });
+      }
 
       const params: Record<string, any> = {};
 
@@ -764,9 +714,8 @@ export class NYCDataIngestionService {
         }
       }
 
-      if (options.limit) {
-        params.$limit = options.limit;
-      }
+      // Note: Don't set $limit in params for full sync - it conflicts with batch processing
+      // The limit option is passed to fetchAllRecords as maxRecords for testing only
 
       await this.client.fetchAllRecords(
         dataset,
@@ -777,10 +726,28 @@ export class NYCDataIngestionService {
             : `${progress.current.toLocaleString()}`;
           console.log(`Processing ${dataset.name} batch: ${batch.length} records, total progress: ${progressStr}`);
           
+          // Update progress tracking
+          if (options.sessionId) {
+            await this.updateProgress(options.sessionId, 'update', {
+              status: 'processing',
+              estimatedTotal: progress.estimated || progress.current,
+              processedRecords: progress.current,
+              currentBatch: Math.floor(offset / batch.length) + 1,
+              totalBatches: progress.estimated ? Math.ceil(progress.estimated / batch.length) : undefined
+            });
+          }
+          
           for (const record of batch) {
             try {
-              await processRecord(record, userId);
-              syncLog.recordsAdded++;
+              const operation = await processRecord(record, userId);
+              if (operation === 'inserted') {
+                syncLog.recordsAdded++;
+              } else if (operation === 'updated') {
+                syncLog.recordsUpdated++;
+              } else {
+                // For backward compatibility with methods that don't return operation type
+                syncLog.recordsAdded++;
+              }
             } catch (error) {
               // Enhanced error logging with record details
               const recordId = this.getRecordIdentifier(record, dataset);
@@ -821,25 +788,41 @@ export class NYCDataIngestionService {
           }
         },
         {
-          maxRecords: options.limit,
-          batchSize: options.fullSync ? 10000 : 5000,
+          maxRecords: options.limit, // Only limit total records if explicitly set for testing
+          batchSize: options.memoryOptimized ? 500 : (options.fullSync ? 2000 : 1000), // Controls memory usage and DB write frequency
           retryAttempts: 3,
-          streamMode: true
+          streamMode: true,
+          memoryOptimized: options.memoryOptimized || false
         }
       );
 
       syncLog.status = syncLog.recordsFailed === 0 ? 'success' : 'partial';
       syncLog.endTime = new Date();
+      
+      // Update progress to completed
+      if (options.sessionId) {
+        await this.updateProgress(options.sessionId, 'complete', {
+          processedRecords: syncLog.recordsProcessed,
+          recordsAdded: syncLog.recordsAdded,
+          recordsUpdated: syncLog.recordsUpdated,
+          recordsFailed: syncLog.recordsFailed
+        });
+      }
 
       const duration = Math.round((syncLog.endTime.getTime() - syncLog.startTime.getTime()) / 1000);
-      const successRate = syncLog.recordsProcessed > 0 ? Math.round((syncLog.recordsAdded / syncLog.recordsProcessed) * 100) : 0;
+      const successRate = syncLog.recordsProcessed > 0 ? Math.round(((syncLog.recordsAdded + syncLog.recordsUpdated) / syncLog.recordsProcessed) * 100) : 0;
+      
+      const lastRecordInfo = syncLog.lastRecordDate 
+        ? `\n        📅 Last Record: ${syncLog.lastRecordDate.toISOString().split('T')[0]}`
+        : '';
       
       console.log(`✅ ${dataset.name} sync completed:
         📊 Processed: ${syncLog.recordsProcessed.toLocaleString()} records
-        ✅ Added: ${syncLog.recordsAdded.toLocaleString()} records
+        ➕ Added: ${syncLog.recordsAdded.toLocaleString()} records
+        🔄 Updated: ${syncLog.recordsUpdated.toLocaleString()} records
         ❌ Failed: ${syncLog.recordsFailed.toLocaleString()} records
         📈 Success Rate: ${successRate}%
-        ⏱️ Duration: ${duration}s`);
+        ⏱️ Duration: ${duration}s${lastRecordInfo}`);
 
       if (syncLog.recordsFailed > 0) {
         console.warn(`⚠️ ${syncLog.recordsFailed} records failed during ${dataset.name} sync. Check the detailed error logs above for specific failure reasons.`);
@@ -850,6 +833,13 @@ export class NYCDataIngestionService {
       syncLog.errorMessage = error instanceof Error ? error.message : 'Unknown error';
       syncLog.endTime = new Date();
       console.error(`${dataset.name} sync failed:`, error);
+      
+      // Update progress to failed
+      if (options.sessionId) {
+        await this.updateProgress(options.sessionId, 'error', {
+          error: error instanceof Error ? error.message : 'Unknown error'
+        });
+      }
     }
 
     await this.logSync(syncLog);
@@ -888,30 +878,56 @@ export class NYCDataIngestionService {
       dataSourceId: NYC_DATASETS.PROPERTY_VALUATION_FY2024.id
     };
 
-    await prisma.$executeRaw`
-      INSERT INTO nyc_property_valuation_2024 (
-        id, job_filing_number, filing_reason, house_no, street_name, borough,
-        lot, bin, block, c_b_no, work_on_floor, work_type, permittee_s_license_type,
-        applicant_license, applicant_first_name, applicant_last_name, applicant_business_name,
-        applicant_business_address, work_permit, job_description, estimated_job_costs,
-        owner_business_name, owner_name, data_source_id, created_at, updated_at
-      ) VALUES (
-        ${uuidv4()}::uuid, ${data.jobFilingNumber}, ${data.filingReason}, ${data.houseNumber},
-        ${data.streetName}, ${data.borough}, ${data.lot}, ${data.bin}, ${data.block},
-        ${data.communityBoard}, ${data.workOnFloor}, ${data.workType}, ${data.permitteeType},
-        ${data.applicantLicense}, ${data.applicantFirstName}, ${data.applicantLastName},
-        ${data.applicantBusinessName}, ${data.applicantBusinessAddress}, ${data.workPermit},
-        ${data.jobDescription}, ${data.estimatedJobCosts}, ${data.ownerBusinessName},
-        ${data.ownerName}, ${data.dataSourceId}, NOW(), NOW()
-      )
-      ON CONFLICT (job_filing_number) 
-      DO UPDATE SET
-        filing_reason = EXCLUDED.filing_reason,
-        work_permit = EXCLUDED.work_permit,
-        job_description = EXCLUDED.job_description,
-        estimated_job_costs = EXCLUDED.estimated_job_costs,
-        updated_at = NOW()
-    `;
+    try {
+      // First check if record exists
+      const existing = await prisma.$queryRaw<Array<{ exists: boolean }>>`
+        SELECT EXISTS(SELECT 1 FROM nyc_property_valuation_2024 WHERE job_filing_number = ${data.jobFilingNumber}) as exists
+      `;
+      
+      const recordExists = existing[0]?.exists || false;
+      
+      // Perform the upsert
+      await prisma.$executeRaw`
+        INSERT INTO nyc_property_valuation_2024 (
+          id, job_filing_number, filing_reason, house_no, street_name, borough,
+          lot, bin, block, c_b_no, work_on_floor, work_type, permittee_s_license_type,
+          applicant_license, applicant_first_name, applicant_last_name, applicant_business_name,
+          applicant_business_address, work_permit, job_description, estimated_job_costs,
+          owner_business_name, owner_name, data_source_id, created_at, updated_at
+        ) VALUES (
+          ${uuidv4()}::uuid, ${data.jobFilingNumber}, ${data.filingReason}, ${data.houseNumber},
+          ${data.streetName}, ${data.borough}, ${data.lot}, ${data.bin}, ${data.block},
+          ${data.communityBoard}, ${data.workOnFloor}, ${data.workType}, ${data.permitteeType},
+          ${data.applicantLicense}, ${data.applicantFirstName}, ${data.applicantLastName},
+          ${data.applicantBusinessName}, ${data.applicantBusinessAddress}, ${data.workPermit},
+          ${data.jobDescription}, ${data.estimatedJobCosts}, ${data.ownerBusinessName},
+          ${data.ownerName}, ${data.dataSourceId}, NOW(), NOW()
+        )
+        ON CONFLICT (job_filing_number) 
+        DO UPDATE SET
+          filing_reason = EXCLUDED.filing_reason,
+          work_permit = EXCLUDED.work_permit,
+          job_description = EXCLUDED.job_description,
+          estimated_job_costs = EXCLUDED.estimated_job_costs,
+          updated_at = NOW()
+      `;
+
+      const operation = recordExists ? 'updated' : 'inserted';
+      
+      // Log successful database operation for debugging
+      if (process.env.NODE_ENV === 'development') {
+        console.log(`✅ DB Operation: ${operation} record with job_filing_number: ${data.jobFilingNumber}`);
+      }
+      
+      return operation;
+    } catch (error) {
+      console.error('❌ Database operation failed:', {
+        error: error instanceof Error ? error.message : String(error),
+        jobFilingNumber: data.jobFilingNumber,
+        stack: error instanceof Error ? error.stack : undefined
+      });
+      throw error; // Re-throw to let the caller handle it
+    }
   }
 
   private async processPropertyValuation2023Record(record: any, userId: string) {
@@ -1254,6 +1270,58 @@ export class NYCDataIngestionService {
       DO UPDATE SET
         critical_flag = EXCLUDED.critical_flag,
         record_date = EXCLUDED.record_date,
+        updated_at = NOW()
+    `;
+  }
+
+  private async processHousingMaintenanceRecord(record: any, userId: string) {
+    if (!record.violationid) {
+      throw new Error('Missing violation ID');
+    }
+
+    const data = {
+      violationId: record.violationid.trim(),
+      buildingId: record.buildingid?.trim() || null,
+      registrationId: record.registrationid?.trim() || null,
+      borough: record.boro?.trim() || null,
+      houseNumber: record.housenumber?.trim() || null,
+      streetName: record.streetname?.trim() || null,
+      zipCode: record.zip?.trim() || null,
+      apartment: record.apartment?.trim() || null,
+      story: record.story?.trim() || null,
+      block: record.block?.trim() || null,
+      lot: record.lot?.trim() || null,
+      inspectionDate: record.inspectiondate ? new Date(record.inspectiondate) : null,
+      approvedDate: record.approveddate ? new Date(record.approveddate) : null,
+      novDescription: record.novdescription?.trim() || null,
+      novIssuedDate: record.novissueddate ? new Date(record.novissueddate) : null,
+      currentStatus: record.currentstatus?.trim() || null,
+      currentStatusDate: record.currentstatusdate ? new Date(record.currentstatusdate) : null,
+      violationStatus: record.violationstatus?.trim() || null,
+      rentImpairing: record.rentimpairing?.trim() || null,
+      dataSourceId: NYC_DATASETS.HOUSING_MAINTENANCE.id
+    };
+
+    await prisma.$executeRaw`
+      INSERT INTO nyc_housing_maintenance_violations (
+        id, violation_id, building_id, registration_id, boro, house_number,
+        street_name, zip_code, apartment, story, block, lot, inspection_date,
+        approved_date, nov_description, nov_issued_date, current_status,
+        current_status_date, violation_status, rent_impairing, data_source_id,
+        created_at, updated_at
+      ) VALUES (
+        ${uuidv4()}::uuid, ${data.violationId}, ${data.buildingId}, ${data.registrationId},
+        ${data.borough}, ${data.houseNumber}, ${data.streetName}, ${data.zipCode},
+        ${data.apartment}, ${data.story}, ${data.block}, ${data.lot}, ${data.inspectionDate},
+        ${data.approvedDate}, ${data.novDescription}, ${data.novIssuedDate}, ${data.currentStatus},
+        ${data.currentStatusDate}, ${data.violationStatus}, ${data.rentImpairing},
+        ${data.dataSourceId}, NOW(), NOW()
+      )
+      ON CONFLICT (violation_id) 
+      DO UPDATE SET
+        current_status = EXCLUDED.current_status,
+        current_status_date = EXCLUDED.current_status_date,
+        violation_status = EXCLUDED.violation_status,
         updated_at = NOW()
     `;
   }
