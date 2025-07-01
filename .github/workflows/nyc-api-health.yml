@@ -1,0 +1,84 @@
+name: NYC API Health Check
+on:
+  schedule:
+    - cron: '*/30 * * * *'  # Every 30 minutes
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths: 
+      - 'src/lib/data-sources/nyc-open-data.ts'
+      - 'src/lib/services/nyc-data-*'
+
+jobs:
+  health-check:
+    name: API Health Check
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: 'npm'
+      
+      - name: Install dependencies
+        run: npm ci
+      
+      - name: Test NYC API basic connectivity
+        run: |
+          echo "Testing basic API connectivity..."
+          curl --fail --max-time 30 "https://data.cityofnewyork.us/resource/8wbx-tsch.json?$limit=1" || exit 1
+          echo "✅ Basic connectivity test passed"
+      
+      - name: Test NYC API count queries
+        run: |
+          echo "Testing count query functionality..."
+          curl --fail --max-time 30 "https://data.cityofnewyork.us/resource/8wbx-tsch.json?$select=count(*)" || exit 1
+          echo "✅ Count query test passed"
+      
+      - name: Test multiple datasets
+        run: |
+          echo "Testing multiple NYC datasets..."
+          
+          # Test For Hire Vehicles dataset
+          curl --fail --max-time 30 "https://data.cityofnewyork.us/resource/8wbx-tsch.json?$limit=1" || echo "⚠️ 8wbx-tsch failed"
+          
+          # Test Property Sales dataset
+          curl --fail --max-time 30 "https://data.cityofnewyork.us/resource/usep-8jbt.json?$limit=1" || echo "⚠️ usep-8jbt failed"
+          
+          # Test DOB Permits dataset
+          curl --fail --max-time 30 "https://data.cityofnewyork.us/resource/dq6g-a4sc.json?$limit=1" || echo "⚠️ dq6g-a4sc failed"
+          
+          echo "✅ Multi-dataset test completed"
+      
+      - name: Test API response times
+        run: |
+          echo "Testing API response times..."
+          start_time=$(date +%s%N)
+          curl --fail --max-time 15 "https://data.cityofnewyork.us/resource/8wbx-tsch.json?$limit=100" > /dev/null
+          end_time=$(date +%s%N)
+          duration=$(( (end_time - start_time) / 1000000 ))
+          echo "Response time: ${duration}ms"
+          
+          if [ $duration -gt 10000 ]; then
+            echo "⚠️ API response time is high: ${duration}ms"
+          else
+            echo "✅ API response time is acceptable: ${duration}ms"
+          fi
+      
+      - name: Create status badge
+        if: success()
+        run: |
+          echo "API Status: Healthy" > api-status.txt
+          echo "Last Check: $(date)" >> api-status.txt
+          echo "✅ All health checks passed"
+      
+      - name: Report failure
+        if: failure()
+        run: |
+          echo "API Status: Unhealthy" > api-status.txt
+          echo "Last Check: $(date)" >> api-status.txt
+          echo "❌ Health check failed"
+          echo "::error title=NYC API Health Check Failed::One or more health checks failed. Please investigate."

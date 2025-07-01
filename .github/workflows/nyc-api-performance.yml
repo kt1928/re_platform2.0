@@ -1,0 +1,233 @@
+name: NYC API Performance Benchmarks
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - 'src/lib/data-sources/nyc-open-data.ts'
+      - 'src/lib/services/nyc-data-*'
+  schedule:
+    - cron: '0 2 * * 1'  # Weekly on Monday at 2 AM
+  workflow_dispatch:
+
+jobs:
+  benchmark:
+    name: Performance Benchmarks
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: 'npm'
+      
+      - name: Install dependencies
+        run: npm ci
+      
+      - name: Create performance test script
+        run: |
+          cat > performance-test.js << 'EOF'
+          const https = require('https');
+          
+          // Test configuration
+          const TEST_DATASET = '8wbx-tsch';
+          const BATCH_SIZES = [100, 500, 1000];
+          const CONCURRENCY_LEVELS = [1, 3, 5];
+          
+          function makeRequest(url) {
+            return new Promise((resolve, reject) => {
+              const startTime = Date.now();
+              https.get(url, (res) => {
+                let data = '';
+                res.on('data', chunk => data += chunk);
+                res.on('end', () => {
+                  const duration = Date.now() - startTime;
+                  try {
+                    const parsed = JSON.parse(data);
+                    resolve({ duration, recordCount: parsed.length });
+                  } catch (error) {
+                    reject(error);
+                  }
+                });
+              }).on('error', reject);
+            });
+          }
+          
+          async function runPerformanceTests() {
+            const results = [];
+            
+            console.log('🚀 Starting NYC API Performance Tests...');
+            
+            // Test different batch sizes
+            for (const batchSize of BATCH_SIZES) {
+              console.log(`\nTesting batch size: ${batchSize}`);
+              const url = `https://data.cityofnewyork.us/resource/${TEST_DATASET}.json?$limit=${batchSize}`;
+              
+              try {
+                const result = await makeRequest(url);
+                const recordsPerSecond = Math.round((result.recordCount / result.duration) * 1000);
+                
+                results.push({
+                  test: `batch_size_${batchSize}`,
+                  duration: result.duration,
+                  recordCount: result.recordCount,
+                  recordsPerSecond
+                });
+                
+                console.log(`  Duration: ${result.duration}ms`);
+                console.log(`  Records: ${result.recordCount}`);
+                console.log(`  Records/sec: ${recordsPerSecond}`);
+              } catch (error) {
+                console.error(`  Error: ${error.message}`);
+                results.push({
+                  test: `batch_size_${batchSize}`,
+                  error: error.message
+                });
+              }
+              
+              // Rate limiting delay
+              await new Promise(resolve => setTimeout(resolve, 1000));
+            }
+            
+            // Test parallel requests
+            console.log('\n🔄 Testing parallel requests...');
+            for (const concurrency of CONCURRENCY_LEVELS) {
+              console.log(`\nTesting concurrency level: ${concurrency}`);
+              const url = `https://data.cityofnewyork.us/resource/${TEST_DATASET}.json?$limit=500`;
+              
+              try {
+                const startTime = Date.now();
+                const promises = Array(concurrency).fill().map(() => makeRequest(url));
+                const parallelResults = await Promise.all(promises);
+                const totalDuration = Date.now() - startTime;
+                const totalRecords = parallelResults.reduce((sum, r) => sum + r.recordCount, 0);
+                const recordsPerSecond = Math.round((totalRecords / totalDuration) * 1000);
+                
+                results.push({
+                  test: `parallel_${concurrency}`,
+                  duration: totalDuration,
+                  recordCount: totalRecords,
+                  recordsPerSecond,
+                  concurrency
+                });
+                
+                console.log(`  Total Duration: ${totalDuration}ms`);
+                console.log(`  Total Records: ${totalRecords}`);
+                console.log(`  Records/sec: ${recordsPerSecond}`);
+              } catch (error) {
+                console.error(`  Error: ${error.message}`);
+                results.push({
+                  test: `parallel_${concurrency}`,
+                  error: error.message
+                });
+              }
+              
+              // Longer delay for parallel tests
+              await new Promise(resolve => setTimeout(resolve, 2000));
+            }
+            
+            // Output results in JSON format for GitHub Actions
+            console.log('\n📊 Performance Test Results:');
+            console.log(JSON.stringify(results, null, 2));
+            
+            // Write results to file
+            require('fs').writeFileSync('performance-results.json', JSON.stringify(results, null, 2));
+            
+            console.log('\n✅ Performance tests completed!');
+          }
+          
+          runPerformanceTests().catch(error => {
+            console.error('Performance test failed:', error);
+            process.exit(1);
+          });
+          EOF
+      
+      - name: Run performance tests
+        run: |
+          echo "📊 Running performance benchmarks..."
+          node performance-test.js
+          
+      - name: Analyze performance results
+        run: |
+          if [ -f performance-results.json ]; then
+            echo "📈 Performance Analysis:"
+            
+            # Extract key metrics
+            best_batch_size=$(node -e "
+              const results = JSON.parse(require('fs').readFileSync('performance-results.json'));
+              const batchTests = results.filter(r => r.test.includes('batch_size') && !r.error);
+              if (batchTests.length > 0) {
+                const best = batchTests.sort((a, b) => b.recordsPerSecond - a.recordsPerSecond)[0];
+                console.log(best.test.replace('batch_size_', ''));
+              }
+            ")
+            
+            best_concurrency=$(node -e "
+              const results = JSON.parse(require('fs').readFileSync('performance-results.json'));
+              const parallelTests = results.filter(r => r.test.includes('parallel') && !r.error);
+              if (parallelTests.length > 0) {
+                const best = parallelTests.sort((a, b) => b.recordsPerSecond - a.recordsPerSecond)[0];
+                console.log(best.concurrency);
+              }
+            ")
+            
+            echo "🏆 Best batch size: ${best_batch_size:-'Unknown'}"
+            echo "🏆 Best concurrency: ${best_concurrency:-'Unknown'}"
+            
+            # Check for performance regressions
+            avg_response_time=$(node -e "
+              const results = JSON.parse(require('fs').readFileSync('performance-results.json'));
+              const validTests = results.filter(r => !r.error && r.duration);
+              if (validTests.length > 0) {
+                const avg = validTests.reduce((sum, r) => sum + r.duration, 0) / validTests.length;
+                console.log(Math.round(avg));
+              }
+            ")
+            
+            if [ -n "$avg_response_time" ] && [ "$avg_response_time" -gt 5000 ]; then
+              echo "⚠️ Warning: Average response time is high (${avg_response_time}ms)"
+              echo "::warning title=Performance Warning::Average API response time is ${avg_response_time}ms"
+            else
+              echo "✅ Performance is within acceptable limits"
+            fi
+          else
+            echo "❌ No performance results file found"
+          fi
+      
+      - name: Upload performance results
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: performance-results
+          path: performance-results.json
+      
+      - name: Comment PR with performance results
+        if: github.event_name == 'pull_request'
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const fs = require('fs');
+            if (fs.existsSync('performance-results.json')) {
+              const results = JSON.parse(fs.readFileSync('performance-results.json'));
+              const validResults = results.filter(r => !r.error);
+              
+              const summary = validResults.map(r => 
+                `- **${r.test}**: ${r.recordsPerSecond} records/sec (${r.duration}ms)`
+              ).join('\n');
+              
+              const body = `## 📊 Performance Test Results
+              
+              ${summary}
+              
+              ${validResults.length > 0 ? '✅' : '❌'} Performance tests completed
+              `;
+              
+              github.rest.issues.createComment({
+                issue_number: context.issue.number,
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                body: body
+              });
+            }

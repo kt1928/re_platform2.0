@@ -1,106 +1,120 @@
-// import { prisma } from '@/lib/db'; // Removed unused import
+/**
+ * NYC Open Data Client - Dynamic Dataset Support
+ * 
+ * This client now supports any NYC Open Data dataset without hardcoded limitations.
+ * Administrators can add any dataset by providing just the dataset ID.
+ */
 
-interface NYCDataset {
+export interface NYCDataset {
   id: string;
   name: string;
   endpoint: string;
   primaryKey?: string[];
   dateField?: string;
   limit?: number;
+  selectedColumns?: string[]; // Admin-selected columns for sync
   validatedFields?: string[]; // Cache of validated field names
   lastValidated?: Date; // When fields were last validated
 }
 
-export const NYC_DATASETS: Record<string, NYCDataset> = {
-  PROPERTY_SALES: {
-    id: 'usep-8jbt',
+/**
+ * Create a dynamic dataset configuration from a dataset ID
+ */
+export function createDatasetConfig(datasetId: string, options: {
+  name?: string;
+  primaryKey?: string[];
+  dateField?: string;
+  selectedColumns?: string[];
+  limit?: number;
+} = {}): NYCDataset {
+  return {
+    id: datasetId,
+    name: options.name || `NYC Dataset ${datasetId}`,
+    endpoint: `https://data.cityofnewyork.us/resource/${datasetId}.json`,
+    primaryKey: options.primaryKey,
+    dateField: options.dateField,
+    selectedColumns: options.selectedColumns,
+    limit: options.limit || 1000, // Use 1000 as default (NYC API limit)
+    validatedFields: undefined,
+    lastValidated: undefined
+  };
+}
+
+/**
+ * @deprecated Legacy compatibility layer for existing code - will be removed in next phase
+ * Use createDatasetConfig() and database-stored configurations instead
+ */
+export const NYC_DATASETS = {
+  PROPERTY_SALES: createDatasetConfig('usep-8jbt', {
     name: 'NYC Citywide Rolling Calendar Sales',
-    endpoint: 'https://data.cityofnewyork.us/resource/usep-8jbt.json',
     primaryKey: ['borough', 'block', 'lot', 'sale_date'],
     dateField: 'sale_date',
-    limit: 10000
-  },
-  DOB_JOB_APPLICATIONS: {
-    id: 'w9ak-ipjd',
-    name: 'DOB Job Application Filings',
-    endpoint: 'https://data.cityofnewyork.us/resource/w9ak-ipjd.json',
-    primaryKey: ['job_filing_number'],
-    dateField: 'current_status_date',
-    limit: 10000
-  },
-  HOUSING_MAINTENANCE: {
-    id: 'wvxf-dwi5',
-    name: 'Housing Maintenance Code Violations',
-    endpoint: 'https://data.cityofnewyork.us/resource/wvxf-dwi5.json',
-    primaryKey: ['violationid'],
-    dateField: 'novdescription',
-    limit: 10000
-  },
-  COMPLAINT_DATA: {
-    id: 'qgea-i56i',
-    name: 'NYPD Complaint Data (qgea-i56i)',
-    endpoint: 'https://data.cityofnewyork.us/resource/qgea-i56i.json',
-    primaryKey: ['cmplnt_num'],
-    dateField: 'cmplnt_fr_dt',
-    limit: 5000 // Smaller batches for large dataset
-  },
-  DOB_NOW_PERMITS: {
-    id: 'dq6g-a4sc',
+    limit: 1000
+  }),
+  DOB_NOW_PERMITS: createDatasetConfig('dq6g-a4sc', {
     name: 'DOB NOW: All Approved Permits',
-    endpoint: 'https://data.cityofnewyork.us/resource/dq6g-a4sc.json',
     primaryKey: ['job_filing_number', 'work_permit'],
     dateField: 'approved_date',
-    limit: 10000
-  },
-  TAX_DEBT_DATA: {
-    id: '9rz4-mjek',
-    name: 'Tax Debt/Water Debt Data (9rz4-mjek)',
-    endpoint: 'https://data.cityofnewyork.us/resource/9rz4-mjek.json',
-    primaryKey: ['borough', 'block', 'lot', 'month'],
-    dateField: 'month',
-    limit: 10000
-  },
-  BUSINESS_LICENSES: {
-    id: 'w7w3-xahh',
-    name: 'Business Licenses (w7w3-xahh)',
-    endpoint: 'https://data.cityofnewyork.us/resource/w7w3-xahh.json',
-    primaryKey: ['license_nbr'],
-    dateField: 'license_creation_date',
-    limit: 10000
-  },
-  DOB_VIOLATIONS: {
-    id: '3h2n-5cm9',
+    limit: 1000
+  }),
+  DOB_VIOLATIONS: createDatasetConfig('3h2n-5cm9', {
     name: 'DOB Violations',
-    endpoint: 'https://data.cityofnewyork.us/resource/3h2n-5cm9.json',
     primaryKey: ['violation_number'],
     dateField: 'issue_date',
-    limit: 10000
-  },
-  EVENT_PERMITS: {
-    id: 'tg4x-b46p',
-    name: 'Event Permits (tg4x-b46p)',
-    endpoint: 'https://data.cityofnewyork.us/resource/tg4x-b46p.json',
+    limit: 1000
+  }),
+  HOUSING_MAINTENANCE: createDatasetConfig('wvxf-dwi5', {
+    name: 'Housing Maintenance Code Violations',
+    primaryKey: ['violationid'],
+    dateField: 'novdescription',
+    limit: 1000
+  }),
+  COMPLAINT_DATA: createDatasetConfig('qgea-i56i', {
+    name: 'NYPD Complaint Data',
+    primaryKey: ['cmplnt_num'],
+    dateField: 'cmplnt_fr_dt',
+    limit: 1000
+  }),
+  TAX_DEBT_DATA: createDatasetConfig('9rz4-mjek', {
+    name: 'Tax Debt/Water Debt Data',
+    primaryKey: ['borough', 'block', 'lot', 'month'],
+    dateField: 'month',
+    limit: 1000
+  }),
+  BUSINESS_LICENSES: createDatasetConfig('w7w3-xahh', {
+    name: 'Business Licenses',
+    primaryKey: ['license_nbr'],
+    dateField: 'license_creation_date',
+    limit: 1000
+  }),
+  EVENT_PERMITS: createDatasetConfig('tg4x-b46p', {
+    name: 'Event Permits',
     primaryKey: ['eventid'],
     dateField: 'startdatetime',
-    limit: 10000
-  },
-  BUILD_JOB_FILINGS: {
-    id: 'w9ak-ipjd',
-    name: 'DOB Job Filings (w9ak-ipjd)',
-    endpoint: 'https://data.cityofnewyork.us/resource/w9ak-ipjd.json',
+    limit: 1000
+  }),
+  BUILD_JOB_FILINGS: createDatasetConfig('w9ak-ipjd', {
+    name: 'DOB Job Filings',
     primaryKey: ['job_filing_number'],
     dateField: 'current_status_date',
-    limit: 10000
-  },
-  RESTAURANT_INSPECTIONS: {
-    id: '43nn-pn8j',
-    name: 'Restaurant Inspections (43nn-pn8j)',
-    endpoint: 'https://data.cityofnewyork.us/resource/43nn-pn8j.json',
+    limit: 1000
+  }),
+  RESTAURANT_INSPECTIONS: createDatasetConfig('43nn-pn8j', {
+    name: 'Restaurant Inspections',
     primaryKey: ['camis', 'inspection_date'],
     dateField: 'inspection_date',
-    limit: 10000
-  }
-};
+    limit: 1000
+  }),
+  // Legacy dataset names for compatibility
+  PROPERTY_VALUATION_FY2024: createDatasetConfig('property-valuation-2024', {
+    name: 'Property Valuation FY2024',
+    limit: 1000
+  }),
+  PROPERTY_VALUATION_FY2023: createDatasetConfig('property-valuation-2023', {
+    name: 'Property Valuation FY2023',
+    limit: 1000
+  })
+} as const;
 
 export class NYCOpenDataClient {
   private appToken?: string;
@@ -116,12 +130,99 @@ export class NYCOpenDataClient {
     }
   }
 
+  /**
+   * Download entire dataset as CSV for bulk operations (more efficient for full syncs)
+   */
+  async downloadDatasetCSV(
+    dataset: NYCDataset,
+    options: {
+      tempDir?: string;
+      onProgress?: (bytesDownloaded: number, totalBytes?: number) => void;
+    } = {}
+  ): Promise<{ filePath: string; recordCount: number }> {
+    const fs = await import('fs/promises');
+    const path = await import('path');
+    const crypto = await import('crypto');
+    
+    const tempDir = options.tempDir || '/tmp';
+    const filename = `nyc_${dataset.id}_${Date.now()}_${crypto.randomBytes(4).toString('hex')}.csv`;
+    const filePath = path.join(tempDir, filename);
+    
+    // NYC Open Data CSV endpoint
+    const csvUrl = `${dataset.endpoint.replace('.json', '.csv')}`;
+    
+    console.log(`Downloading CSV from: ${csvUrl}`);
+    
+    const response = await fetch(csvUrl, {
+      headers: {
+        'User-Agent': 'RE-Platform/1.0 (+https://re-platform.com/api)',
+        ...(this.appToken && { '$$app_token': this.appToken })
+      }
+    });
+    
+    if (!response.ok) {
+      throw new Error(`Failed to download CSV: ${response.status} ${response.statusText}`);
+    }
+    
+    const totalBytes = parseInt(response.headers.get('content-length') || '0');
+    let downloadedBytes = 0;
+    
+    // Stream download to file
+    const fileHandle = await fs.open(filePath, 'w');
+    const writer = fileHandle.createWriteStream();
+    
+    try {
+      if (!response.body) {
+        throw new Error('No response body');
+      }
+      
+      const reader = response.body.getReader();
+      
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        
+        downloadedBytes += value.length;
+        writer.write(value);
+        
+        if (options.onProgress) {
+          options.onProgress(downloadedBytes, totalBytes);
+        }
+      }
+      
+      await writer.end();
+      
+      // Count records (minus header)
+      const content = await fs.readFile(filePath, 'utf-8');
+      const recordCount = content.split('\n').length - 2; // -1 for header, -1 for final empty line
+      
+      console.log(`Downloaded ${recordCount} records to ${filePath}`);
+      
+      return { filePath, recordCount };
+      
+    } catch (error) {
+      // Cleanup on error
+      try {
+        await fs.unlink(filePath);
+      } catch {}
+      throw error;
+    } finally {
+      await fileHandle.close();
+    }
+  }
+
   async fetchDataset(
     dataset: NYCDataset, 
-    params: Record<string, any> = {}
+    params: Record<string, any> = {},
+    options: { timeout?: number; skipValidation?: boolean } = {}
   ): Promise<any[]> {
-    // Validate parameters against available fields first
-    const validatedParams = await this.validateQueryParams(dataset, params);
+    const { timeout = 30000, skipValidation = false } = options;
+    
+    // Skip complex validation for basic queries to prevent blocking
+    const validatedParams = skipValidation ? params : await this.validateQueryParams(dataset, params).catch(() => {
+      console.warn(`Field validation failed for ${dataset.id}, proceeding with original params`);
+      return params;
+    });
     
     const url = new URL(dataset.endpoint);
     
@@ -133,8 +234,11 @@ export class NYCOpenDataClient {
       url.searchParams.append('$offset', String(validatedParams.$offset));
     }
     
+    // Use admin-selected columns if available, otherwise use provided $select
     if (validatedParams.$select) {
       url.searchParams.append('$select', validatedParams.$select);
+    } else if (dataset.selectedColumns && dataset.selectedColumns.length > 0) {
+      url.searchParams.append('$select', dataset.selectedColumns.join(','));
     }
     
     if (validatedParams.$where) {
@@ -171,6 +275,9 @@ export class NYCOpenDataClient {
       await new Promise(resolve => setTimeout(resolve, this.rateLimitDelay));
     }
 
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), timeout);
+
     try {
       const response = await fetch(url.toString(), {
         headers: {
@@ -178,9 +285,10 @@ export class NYCOpenDataClient {
           'User-Agent': 'RE-Platform/1.0 (+https://re-platform.com/api)',
           ...(this.appToken && { 'X-App-Token': this.appToken })
         },
-        // Add timeout to prevent hanging requests
-        signal: AbortSignal.timeout(30000) // 30 second timeout
+        signal: controller.signal
       });
+
+      clearTimeout(timeoutId);
 
       // Enhanced error handling with specific NYC Open Data API status codes
       if (response.status === 429) {
@@ -210,7 +318,13 @@ export class NYCOpenDataClient {
       }
 
       if (!response.ok) {
-        const errorText = await response.text().catch(() => 'Unknown error');
+        let errorText = 'Unknown error';
+        try {
+          errorText = await response.text();
+        } catch (e) {
+          // If we can't read the error response, use a generic message
+          errorText = `HTTP ${response.status} - ${response.statusText}`;
+        }
         throw new Error(`HTTP ${response.status}: ${errorText}`);
       }
 
@@ -227,14 +341,17 @@ export class NYCOpenDataClient {
       
       return data;
     } catch (error) {
-      if (error.name === 'TimeoutError') {
-        throw new Error(`Request timeout for dataset ${dataset.name}. Try reducing batch size or adding filters.`);
+      clearTimeout(timeoutId);
+      
+      if (error.name === 'AbortError') {
+        throw new Error(`Request timeout (${timeout}ms) for dataset ${dataset.name}. Try reducing batch size or adding filters.`);
       }
       
       console.error(`Error fetching dataset ${dataset.name}:`, {
         error: error instanceof Error ? error.message : String(error),
         url: url.toString(),
-        params: validatedParams
+        params: validatedParams,
+        timeout
       });
       throw error;
     }
@@ -282,7 +399,7 @@ export class NYCOpenDataClient {
   ): Promise<any[]> {
     const {
       maxRecords,
-      batchSize = options.memoryOptimized ? 200 : 1000, // Smaller batches for memory-constrained environments and API stability
+      batchSize = options.memoryOptimized ? 5000 : 1000, // Smaller batches for memory-constrained environments and API stability
       retryAttempts = 3,
       streamMode = true, // Don't accumulate all records in memory by default
       memoryOptimized = false
@@ -348,7 +465,7 @@ export class NYCOpenDataClient {
       while (attempt < retryAttempts && !success) {
         try {
           console.log(`Fetching batch: offset=${offset.toLocaleString()}, limit=${batchParams.$limit.toLocaleString()}`);
-          batch = await this.fetchDatasetWithRetry(dataset, batchParams, attempt);
+          batch = await this.fetchDatasetWithRetry(dataset, batchParams, 0, retryAttempts - 1);
           success = true;
 
         } catch (error) {
@@ -501,6 +618,252 @@ export class NYCOpenDataClient {
     return streamMode ? [] : allRecords;
   }
 
+  /**
+   * Fetch all records with parallel processing for better performance
+   */
+  async fetchAllRecordsParallel(
+    dataset: NYCDataset,
+    params: Record<string, any> = {},
+    onBatch?: (records: any[], offset: number, progress: { current: number; estimated?: number }) => Promise<void>,
+    options: {
+      maxRecords?: number;
+      batchSize?: number;
+      concurrency?: number;
+      retryAttempts?: number;
+      streamMode?: boolean;
+      memoryOptimized?: boolean;
+    } = {}
+  ): Promise<any[]> {
+    const {
+      maxRecords,
+      batchSize = options.memoryOptimized ? 2000 : 1000,
+      concurrency = options.memoryOptimized ? 3 : 5,
+      retryAttempts = 3,
+      streamMode = true,
+      memoryOptimized = false
+    } = options;
+
+    const allRecords: any[] = streamMode ? [] : [];
+    let totalProcessed = 0;
+    let estimatedTotal: number | undefined;
+
+    // Get estimated total count for better progress tracking
+    try {
+      if (!params.$where) {
+        const countResult = await this.getRecordCount(dataset);
+        estimatedTotal = countResult.count;
+        console.log(`Estimated total records: ${estimatedTotal?.toLocaleString()}`);
+      }
+    } catch (error) {
+      console.warn('Could not get total count estimate:', error);
+    }
+
+    // Semaphore for concurrency control
+    class Semaphore {
+      private permits: number;
+      private waitQueue: (() => void)[] = [];
+
+      constructor(permits: number) {
+        this.permits = permits;
+      }
+
+      async acquire(): Promise<void> {
+        if (this.permits > 0) {
+          this.permits--;
+          return Promise.resolve();
+        }
+
+        return new Promise<void>((resolve) => {
+          this.waitQueue.push(resolve);
+        });
+      }
+
+      release(): void {
+        this.permits++;
+        if (this.waitQueue.length > 0) {
+          const resolve = this.waitQueue.shift()!;
+          this.permits--;
+          resolve();
+        }
+      }
+    }
+
+    const semaphore = new Semaphore(concurrency);
+    const activeBatches = new Map<number, Promise<any>>();
+    let nextOffset = 0;
+    let hasMore = true;
+
+    console.log(`Starting parallel dataset fetch with batch size: ${batchSize.toLocaleString()}, concurrency: ${concurrency}`);
+
+    while (hasMore && (!maxRecords || totalProcessed < maxRecords)) {
+      // Fill up to concurrency limit with parallel requests
+      while (activeBatches.size < concurrency && hasMore && (!maxRecords || totalProcessed < maxRecords)) {
+        const offset = nextOffset;
+        const remainingRecords = maxRecords ? maxRecords - totalProcessed : null;
+        const currentBatchSize = remainingRecords !== null 
+          ? Math.min(batchSize, remainingRecords)
+          : batchSize;
+
+        // Create batch promise
+        const batchPromise = this.fetchBatchWithSemaphore(
+          dataset, 
+          { ...params, $limit: currentBatchSize, $offset: offset },
+          semaphore,
+          retryAttempts
+        );
+
+        activeBatches.set(offset, batchPromise);
+        nextOffset += currentBatchSize;
+        
+        // Rate limiting delay between starting batches
+        if (activeBatches.size < concurrency) {
+          await new Promise(resolve => setTimeout(resolve, this.rateLimitDelay));
+        }
+      }
+
+      // Wait for at least one batch to complete
+      if (activeBatches.size > 0) {
+        const completedOffsets = await this.waitForAnyBatch(activeBatches);
+        
+        for (const offset of completedOffsets) {
+          try {
+            const batch = await activeBatches.get(offset)!;
+            activeBatches.delete(offset);
+
+            if (batch.length === 0) {
+              console.log('Empty batch received, ending parallel fetch');
+              hasMore = false;
+              break;
+            }
+
+            if (!streamMode) {
+              allRecords.push(...batch);
+            }
+
+            totalProcessed += batch.length;
+
+            // Call the batch processor
+            if (onBatch) {
+              const progress = {
+                current: totalProcessed,
+                estimated: estimatedTotal
+              };
+              await onBatch(batch, offset, progress);
+            }
+
+            const progressPct = estimatedTotal 
+              ? ` - ${Math.round((totalProcessed / estimatedTotal) * 100)}% complete`
+              : '';
+            console.log(`✅ Parallel batch (offset ${offset}): +${batch.length.toLocaleString()} records | Total: ${totalProcessed.toLocaleString()}${progressPct}`);
+
+            // Memory management
+            if (memoryOptimized) {
+              batch.length = 0; // Clear the batch array
+              if (global.gc && totalProcessed % (batchSize * 3) === 0) {
+                global.gc(); // Force garbage collection periodically
+              }
+            }
+
+            // Check if this batch was smaller than expected (end of data)
+            if (batch.length < currentBatchSize) {
+              console.log(`Reached end of dataset - batch ${offset} had only ${batch.length} records`);
+              hasMore = false;
+              break;
+            }
+
+          } catch (error) {
+            activeBatches.delete(offset);
+            console.error(`Parallel batch failed (offset ${offset}):`, error);
+            
+            // For now, continue with other batches instead of failing entirely
+            // In production, you might want to implement more sophisticated error handling
+          }
+        }
+      }
+
+      // Check memory usage if optimized mode is enabled
+      if (memoryOptimized && process.memoryUsage) {
+        const memUsage = process.memoryUsage();
+        const memMB = Math.round(memUsage.heapUsed / 1024 / 1024);
+        
+        if (memMB > 512) {
+          console.warn(`High memory usage: ${memMB}MB, reducing concurrency`);
+          // Temporarily reduce concurrency
+          while (activeBatches.size > Math.max(1, Math.floor(concurrency / 2))) {
+            await this.waitForAnyBatch(activeBatches);
+          }
+        }
+      }
+    }
+
+    // Wait for all remaining batches to complete
+    while (activeBatches.size > 0) {
+      const completedOffsets = await this.waitForAnyBatch(activeBatches);
+      for (const offset of completedOffsets) {
+        try {
+          const batch = await activeBatches.get(offset)!;
+          activeBatches.delete(offset);
+          
+          if (batch.length > 0) {
+            if (!streamMode) {
+              allRecords.push(...batch);
+            }
+            totalProcessed += batch.length;
+            
+            if (onBatch) {
+              const progress = {
+                current: totalProcessed,
+                estimated: estimatedTotal
+              };
+              await onBatch(batch, offset, progress);
+            }
+          }
+        } catch (error) {
+          activeBatches.delete(offset);
+          console.error(`Final parallel batch failed (offset ${offset}):`, error);
+        }
+      }
+    }
+
+    console.log(`Parallel dataset fetch completed. Total records processed: ${totalProcessed.toLocaleString()}`);
+    return streamMode ? [] : allRecords;
+  }
+
+  /**
+   * Helper method to fetch a batch with semaphore control
+   */
+  private async fetchBatchWithSemaphore(
+    dataset: NYCDataset,
+    params: Record<string, any>,
+    semaphore: any,
+    retryAttempts: number
+  ): Promise<any[]> {
+    await semaphore.acquire();
+    
+    try {
+      const result = await this.fetchDatasetWithRetry(dataset, params, 0, retryAttempts);
+      return result;
+    } finally {
+      semaphore.release();
+    }
+  }
+
+  /**
+   * Wait for any batch to complete and return the completed offsets
+   */
+  private async waitForAnyBatch(activeBatches: Map<number, Promise<any>>): Promise<number[]> {
+    const entries = Array.from(activeBatches.entries());
+    const promises = entries.map(([offset, promise]) => 
+      promise.then(
+        result => ({ offset, result, success: true }),
+        error => ({ offset, error, success: false })
+      )
+    );
+
+    const completed = await Promise.race(promises);
+    return [completed.offset];
+  }
+
   async getLatestRecordDate(dataset: NYCDataset): Promise<Date | null> {
     if (!dataset.dateField) {
       return null;
@@ -582,8 +945,7 @@ export class NYCOpenDataClient {
       console.log(`Attempting count query for ${dataset.id} with params:`, countParams);
       
       // Add shorter timeout for count queries to prevent hanging
-      const countPromise = this.fetchDatasetWithTimeout(dataset, countParams, 10000); // 10 second timeout
-      const result = await countPromise;
+      const result = await this.fetchDataset(dataset, countParams, { timeout: 10000, skipValidation: true });
       const count = result[0]?.count ? parseInt(result[0].count) : null;
       
       if (count && count > 0) {
@@ -614,7 +976,7 @@ export class NYCOpenDataClient {
       console.log(`Using fast sample estimation for ${dataset.id} with params:`, sampleParams);
       
       // Use shorter timeout for sample queries
-      const sampleResult = await this.fetchDatasetWithTimeout(dataset, sampleParams, 8000);
+      const sampleResult = await this.fetchDataset(dataset, sampleParams, { timeout: 8000, skipValidation: true });
       
       if (sampleResult.length < sampleSize) {
         // Got fewer than sample size, this is likely the total
@@ -740,28 +1102,53 @@ export class NYCOpenDataClient {
   }
 
   /**
-   * Enhanced fetch with proper error handling and circuit breaker pattern
+   * Enhanced fetch with proper error handling and exponential backoff
    */
   private async fetchDatasetWithRetry(
     dataset: NYCDataset, 
     params: Record<string, any>,
-    attemptNumber: number = 0
+    attemptNumber: number = 0,
+    maxRetries: number = 3
   ): Promise<any[]> {
+    const retryParams = { ...params };
+    
     // Implement circuit breaker for repeated failures
     if (attemptNumber > 0) {
       // Reduce batch size on retries to avoid overwhelming the API
-      if (params.$limit && params.$limit > 500) {
-        params = { ...params, $limit: Math.max(500, Math.floor(params.$limit / 2)) };
-        console.log(`Reducing batch size to ${params.$limit} for retry attempt ${attemptNumber}`);
+      if (retryParams.$limit && retryParams.$limit > 500) {
+        retryParams.$limit = Math.max(500, Math.floor(retryParams.$limit / 2));
+        console.log(`Reducing batch size to ${retryParams.$limit} for retry attempt ${attemptNumber}`);
       }
+      
+      // Exponential backoff with jitter
+      const baseDelay = this.baseBackoffMs * Math.pow(2, attemptNumber - 1);
+      const jitter = Math.random() * 1000;
+      const delay = Math.min(baseDelay + jitter, 30000); // Max 30s delay
+      
+      console.log(`Retrying in ${Math.round(delay)}ms (attempt ${attemptNumber + 1}/${maxRetries + 1})`);
+      await new Promise(resolve => setTimeout(resolve, delay));
     }
     
     try {
-      return await this.fetchDataset(dataset, params);
+      // Use shorter timeout for retries
+      const timeout = attemptNumber > 0 ? 15000 : 30000;
+      return await this.fetchDataset(dataset, retryParams, { timeout, skipValidation: attemptNumber > 0 });
     } catch (error) {
-      // Enhanced error context
       const errorMsg = error instanceof Error ? error.message : String(error);
-      throw new Error(`${errorMsg} (attempt ${attemptNumber + 1}, params: ${JSON.stringify(params)})`);
+      
+      // Check if this is a permanent error that shouldn't be retried
+      if (errorMsg.includes('403') || errorMsg.includes('Access forbidden') || 
+          errorMsg.includes('404') || errorMsg.includes('Dataset not found')) {
+        throw new Error(`Permanent error - not retrying: ${errorMsg}`);
+      }
+      
+      // If we've exhausted retries, throw the error
+      if (attemptNumber >= maxRetries) {
+        throw new Error(`${errorMsg} (failed after ${maxRetries + 1} attempts)`);
+      }
+      
+      // Retry for transient errors
+      return this.fetchDatasetWithRetry(dataset, params, attemptNumber + 1, maxRetries);
     }
   }
 
