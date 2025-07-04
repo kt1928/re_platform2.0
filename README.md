@@ -1,151 +1,83 @@
-# Real Estate Intelligence Platform - Backend API
+# RE Platform 2.0 - Fresh Python Build
 
-## ⚠️ PROJECT STATUS: ACTIVE DEVELOPMENT - BACKEND ONLY
-
-This is a **private, internal-only** real estate data platform designed for investment analysis and property management. Currently building the backend infrastructure before any public-facing components.
-
-## 🎯 Project Vision
-
-Transform real estate investment decisions through comprehensive data aggregation, analysis, and management tools. This platform will:
-
-1. **Aggregate** real estate data from multiple sources (NYC Open Data, Zillow, Census)
-2. **Analyze** market trends and investment opportunities
-3. **Manage** property portfolios and performance tracking
-4. **Alert** on market changes and opportunities
-
-## 🏗️ Current Phase: Backend Infrastructure
-
-We are **intentionally** building the backend first:
-- ✅ PostgreSQL database design
-- ✅ Next.js API routes (private, authenticated)
-- ✅ Basic project setup and configuration
-- ❌ Data ingestion pipelines (next phase)
-- ❌ Frontend (postponed until backend is stable)
-- ❌ Public API (never - this is internal only)
-
-## 📁 Project Structure
+## Project Structure
 
 ```
-re_platform/
-├── docs/                    # Architecture decisions and guides
-│   ├── ARCHITECTURE.md     # System design and rationale
-│   ├── API_ROUTES.md       # API endpoint documentation
-│   ├── DATABASE.md         # PostgreSQL schema design
-│   ├── SECURITY.md         # Security and privacy guidelines
-│   └── DECISIONS.md        # Decision log with rationale
-├── database/               # Database schemas and migrations
-│   ├── schema.sql         # Current database schema
-│   └── migrations/        # Version-controlled migrations
-├── src/
-│   ├── app/api/           # Next.js 15 App Router API routes
-│   ├── lib/               # Shared libraries and utilities
-│   └── types/             # TypeScript type definitions
-├── prisma/                # Prisma schema and migrations
-└── scripts/              # Data processing and maintenance
+re_platform_2.0/
+├── .env                    # Environment configuration
+├── DATABASE_MANAGEMENT.md  # Detailed database documentation
+├── CLAUDE.md              # AI assistant instructions
+├── docker/                # Docker and database management
+│   ├── docker-compose.yml # PostgreSQL and PgAdmin services
+│   ├── postgres-init/     # Database initialization scripts
+│   ├── backup-database.sh # Database backup utility
+│   └── restore-database.sh # Database restore utility
+├── mac-switching/         # Mac Mini ↔ MacBook switching
+│   ├── db-status.sh       # Database status and connectivity
+│   ├── switch-to-local.sh # Switch to MacBook database
+│   ├── switch-to-mac-mini.sh # Switch to Mac Mini database
+│   ├── sync-to-mac-mini.sh   # Sync data TO Mac Mini
+│   └── sync-from-mac-mini.sh # Sync data FROM Mac Mini
+├── db_backups/           # Database backup files
+└── logs/                 # Operation logs
 ```
 
-## 🚨 Critical Principles
+## Quick Start
 
-1. **INTERNAL ONLY** - No public endpoints, ever
-2. **DATA PRIVACY** - All data is proprietary and confidential
-3. **SECURITY FIRST** - Authentication required for all access
-4. **PRAGMATIC DESIGN** - Build what we need, when we need it
-5. **DEVILS ADVOCATE** - Challenge every architectural decision
-
-## 🔧 Technology Stack
-
-- **Runtime**: Node.js 20+ with TypeScript
-- **Framework**: Next.js 15 (App Router, API routes only)
-- **Database**: PostgreSQL 15
-- **ORM**: Prisma (type-safe database access)
-- **Authentication**: NextAuth.js with JWT
-- **Validation**: Zod (runtime type checking)
-- **Testing**: Vitest + Playwright
-
-## 🚀 Getting Started
-
-### Prerequisites
-- Node.js 20+
-- PostgreSQL 15+ running locally or accessible remotely
-- Git
-
-### Setup
-
+### 1. Start Local Database
 ```bash
-# Clone and install dependencies
-cd re_platform
-npm install
-
-# Set up environment variables
-cp .env.example .env.local
-# Edit .env.local with your database connection string
-
-# Generate Prisma client
-npm run db:generate
-
-# Create database and run migrations
-npm run db:push
-
-# Start development server
-npm run dev
+cd docker
+docker compose up -d postgres
 ```
 
-### Verify Setup
-
+### 2. Check Status
 ```bash
-# Health check
-curl http://localhost:3000/api/health
-
-# Should return:
-{
-  "success": true,
-  "data": {
-    "status": "healthy",
-    "database": "connected"
-  }
-}
+./mac-switching/db-status.sh
 ```
 
-## 📊 Available Scripts
+### 3. Switch Between Databases
+```bash
+# Switch to local
+./mac-switching/switch-to-local.sh
 
-- `npm run dev` - Start development server
-- `npm run build` - Build for production
-- `npm run lint` - Run ESLint
-- `npm run typecheck` - Run TypeScript compiler
-- `npm run db:generate` - Generate Prisma client
-- `npm run db:push` - Push schema to database
-- `npm run db:migrate` - Create and run migrations
-- `npm run db:studio` - Open Prisma Studio
+# Switch to Mac Mini
+./mac-switching/switch-to-mac-mini.sh
+```
 
-## 🧪 Current Endpoints
+### 4. Sync Data
+```bash
+# Sync TO Mac Mini
+./mac-switching/sync-to-mac-mini.sh
 
-- `GET /api/health` - Health check and system status
+# Sync FROM Mac Mini
+./mac-switching/sync-from-mac-mini.sh
+```
 
-## 📋 Next Development Steps
+## Key Features
 
-1. **Authentication System** - User management and JWT tokens
-2. **Property CRUD** - Basic property data operations
-3. **Data Validation** - Zod schemas for all inputs
-4. **Error Handling** - Consistent error responses
-5. **Testing Suite** - Unit and integration tests
+- **Docker PostgreSQL** with persistent volumes
+- **PgAdmin** web interface on port 5050
+- **Seamless switching** between MacBook and Mac Mini
+- **Rsync data synchronization** with automated scripts
+- **Network-based connectivity testing** (no SSH Docker dependencies)
+- **Comprehensive logging** of all operations
+- **Automated backup/restore** procedures
 
-## ⚡ Quick Links
+## Web Interfaces
 
-- [Architecture Overview](./docs/ARCHITECTURE.md)
-- [API Documentation](./docs/API_ROUTES.md)
-- [Database Schema](./docs/DATABASE.md)
-- [Security Guidelines](./docs/SECURITY.md)
-- [Decision Log](./docs/DECISIONS.md)
+- **Local PgAdmin**: http://localhost:5050
+- **Mac Mini PgAdmin**: http://192.168.50.209:5050
+  - Email: admin@re-platform.com
+  - Password: See .env file
 
-## 🤔 Questions to Always Ask
+## Configuration
 
-Before implementing any feature, ask:
-1. Does this solve a real problem we have TODAY?
-2. Is this the simplest solution that works?
-3. Will this scale when we 10x our data?
-4. What are the security implications?
-5. What's the maintenance burden?
+All configuration is in `.env` file:
+- Database passwords
+- Mac Mini network settings
+- Rsync options
+- Connection strings
 
----
+## Phase 1 Complete ✅
 
-**Remember**: We're building a tool to make money in real estate, not to win architecture awards. Stay focused on delivering value.
+The Docker PostgreSQL infrastructure with Mac Mini mirroring is now complete and organized into logical directories. Ready for Phase 2: Python Foundation & Authentication.

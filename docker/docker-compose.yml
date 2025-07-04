@@ -1,0 +1,46 @@
+services:
+  postgres:
+    image: postgres:15-alpine
+    container_name: re_platform_postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: re_platform
+      POSTGRES_USER: re_platform_user
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-secure_password_change_me}
+      POSTGRES_HOST_AUTH_METHOD: trust
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ../db_backups:/backups
+      - ./postgres-init/init:/docker-entrypoint-initdb.d
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U re_platform_user -d re_platform"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - re_platform_network
+
+  # Optional: PgAdmin for database management
+  pgadmin:
+    image: dpage/pgadmin4:latest
+    container_name: re_platform_pgadmin
+    restart: unless-stopped
+    environment:
+      PGADMIN_DEFAULT_EMAIL: admin@re-platform.com
+      PGADMIN_DEFAULT_PASSWORD: ${PGADMIN_PASSWORD:-admin123}
+    ports:
+      - "5050:80"
+    depends_on:
+      - postgres
+    networks:
+      - re_platform_network
+
+volumes:
+  postgres_data:
+    driver: local
+
+networks:
+  re_platform_network:
+    driver: bridge
