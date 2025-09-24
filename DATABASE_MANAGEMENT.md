@@ -64,8 +64,8 @@ DATABASE_URL=postgresql://re_platform_user:secure_re_platform_password_2024@loca
 
 # Network Configuration
 MAC_MINI_IP=192.168.50.209
-MAC_MINI_USER=kappy
-MAC_MINI_DB_PATH=/Users/kappy/re_platform_docker_data
+MAC_MINI_USER=kapmini
+MAC_MINI_DB_PATH=/Users/kapmini/re_platform_docker_data
 
 # Rsync Configuration
 RSYNC_OPTIONS=-avz --delete --exclude='.DS_Store'

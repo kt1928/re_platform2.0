@@ -17,7 +17,13 @@ ALTER DATABASE re_platform SET timezone TO 'UTC';
 -- Create initial tables structure placeholder
 -- (Tables will be created by SQLAlchemy migrations)
 
+-- Create a simple initialization log table for tracking
+CREATE TABLE IF NOT EXISTS public.initialization_log (
+    id SERIAL PRIMARY KEY,
+    created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+    message TEXT NOT NULL
+);
+
 -- Log initialization
-INSERT INTO public.system_logs (created_at, level, message) 
-VALUES (NOW(), 'INFO', 'Database initialized successfully')
-ON CONFLICT DO NOTHING;
+INSERT INTO public.initialization_log (message) 
+VALUES ('Database initialized successfully');

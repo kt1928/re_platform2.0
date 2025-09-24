@@ -27,7 +27,7 @@ if docker info >/dev/null 2>&1; then
     # Check local PostgreSQL container
     echo ""
     echo "🗄️  Local PostgreSQL Container:"
-    if (cd ../docker && docker compose ps postgres || docker-compose ps postgres) | grep -q "Up"; then
+    if docker ps --filter "name=re_platform_postgres" --format "table {{.Status}}" | grep -q "Up"; then
         echo "✅ Local PostgreSQL is running"
         LOCAL_STATUS="UP"
     else
@@ -36,7 +36,7 @@ if docker info >/dev/null 2>&1; then
     fi
     
     # Show container details
-    (cd ../docker && docker compose ps postgres || docker-compose ps postgres)
+    docker ps --filter "name=re_platform_postgres" --format "table {{.Names}}\t{{.Status}}\t{{.Ports}}"
     
 else
     echo "❌ Docker is not running"
@@ -48,33 +48,33 @@ echo ""
 # Check Mac Mini connectivity
 echo "🌐 Mac Mini Connectivity:"
 if ssh -o ConnectTimeout=5 "${MAC_MINI_USER}@${MAC_MINI_IP}" "echo 'Connection successful'" >/dev/null 2>&1; then
-    echo "✅ Mac Mini is reachable at ${MAC_MINI_IP}"
+    echo "✅ Mac Mini SSH is reachable at ${MAC_MINI_IP}"
+    SSH_STATUS="UP"
+else
+    echo "⚠️  Mac Mini SSH not available at ${MAC_MINI_IP} (may be disabled)"
+    SSH_STATUS="DOWN"
+fi
+
+# Check Mac Mini PostgreSQL via network connection (regardless of SSH)
+echo ""
+echo "🗄️  Mac Mini PostgreSQL:"
+if timeout 5 bash -c "cat < /dev/null > /dev/tcp/${MAC_MINI_IP}/5432" 2>/dev/null; then
+    echo "✅ Mac Mini PostgreSQL is accepting connections on port 5432"
+    MAC_MINI_STATUS="UP"
     
-    # Check Mac Mini PostgreSQL via network connection
-    echo ""
-    echo "🗄️  Mac Mini PostgreSQL:"
-    if timeout 5 bash -c "cat < /dev/null > /dev/tcp/${MAC_MINI_IP}/5432" 2>/dev/null; then
-        echo "✅ Mac Mini PostgreSQL is accepting connections on port 5432"
-        MAC_MINI_STATUS="UP"
-        
-        # Test actual database connection if psql is available
-        if command -v psql >/dev/null 2>&1; then
-            if psql "postgresql://re_platform_user:secure_re_platform_password_2024@${MAC_MINI_IP}:5432/re_platform" -c "SELECT 1;" >/dev/null 2>&1; then
-                echo "✅ Mac Mini database connection successful"
-            else
-                echo "⚠️  Mac Mini port 5432 open but database connection failed"
-            fi
+    # Test actual database connection if psql is available
+    if command -v psql >/dev/null 2>&1; then
+        if psql "postgresql://re_platform_user:secure_re_platform_password_2024@${MAC_MINI_IP}:5432/re_platform" -c "SELECT 1;" >/dev/null 2>&1; then
+            echo "✅ Mac Mini database connection successful"
         else
-            echo "ℹ️  psql not available for database connection test"
+            echo "⚠️  Mac Mini port 5432 open but database connection failed"
         fi
     else
-        echo "❌ Mac Mini PostgreSQL is not accepting connections on port 5432"
-        MAC_MINI_STATUS="DOWN"
+        echo "ℹ️  psql not available for database connection test"
     fi
-    
 else
-    echo "❌ Mac Mini is not reachable at ${MAC_MINI_IP}"
-    MAC_MINI_STATUS="UNREACHABLE"
+    echo "❌ Mac Mini PostgreSQL is not accepting connections on port 5432"
+    MAC_MINI_STATUS="DOWN"
 fi
 
 echo ""
@@ -84,7 +84,7 @@ echo "🔗 Database Connection Test:"
 if [[ "$DATABASE_URL" == *"localhost"* ]]; then
     echo "Testing local database connection..."
     if [ "$LOCAL_STATUS" = "UP" ]; then
-        if (cd ../docker && docker compose exec postgres pg_isready -U re_platform_user -d re_platform) >/dev/null 2>&1 || (cd ../docker && docker-compose exec postgres pg_isready -U re_platform_user -d re_platform) >/dev/null 2>&1; then
+        if docker exec re_platform_postgres pg_isready -U re_platform_user -d re_platform >/dev/null 2>&1; then
             echo "✅ Local database connection successful"
         else
             echo "❌ Local database connection failed"
